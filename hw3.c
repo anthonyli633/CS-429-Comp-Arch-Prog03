@@ -81,6 +81,10 @@ static const InstrDesc instr_table[] = {
     { "return", FMT_R,   OP_RETURN },  // return rd  (if your spec uses no operands, change to FMT_L/none)
     { "brgt",   FMT_RRR, OP_BRGT   },  // brgt rd, rs, rt (adjust if your spec differs)
     { "priv",   FMT_PRIV, OP_PRIV  },  // priv rd, rs, rt, L
+    { "addf",   FMT_RRR, OP_ADDF },
+    { "subf",   FMT_RRR, OP_SUBF },
+    { "mulf",   FMT_RRR, OP_MULF },
+    { "divf",   FMT_RRR, OP_DIVF },
     { NULL,     0,       0},
 };
 
@@ -196,7 +200,12 @@ void parseInput(FILE *input) {
         char *p = line;
         if (*p == ';' || *p == '\n') continue;
         else if (*p == ':') {
+            // Check valid label (< 256 chars, nonempty, no spaces)
             rstrip(p + 1);
+            if (strlen(p + 1) == 0 || strlen(p + 1) > 255 || strchr(p + 1, ' ')) {
+                fprintf(stderr, "Invalid label: %s\n", p + 1);
+                exit(1);
+            }
             add_label(p + 1, pc);
         } else if (*p == '.') {
             if (strncmp(p, ".code", 5) == 0) { type = 0; }
@@ -371,7 +380,12 @@ static bool parse_reg_num(const char *tok, uint8_t *out) {
     return true;
 }
 
-void generateOutput(FILE *intermediate, FILE *output) {
+void clearFile(const char* path) {
+    FILE *f = fopen(path, "w");
+    fclose(f);
+}
+
+bool generateOutput(FILE *intermediate, FILE *output) {
     char line[1024];
     int section = -1; // 0 = code, 1 = data
     printf("Generating output...\n");
@@ -413,7 +427,7 @@ void generateOutput(FILE *intermediate, FILE *output) {
             if (!desc) {
                 fprintf(stderr, "Unknown instruction in intermediate: %s\n", op);
                 free(op);
-                exit(1);
+                return 0;
             }
 
             char *t1 = parse_token(&p);
@@ -425,7 +439,7 @@ void generateOutput(FILE *intermediate, FILE *output) {
                 uint8_t rd, rs, rt;
                 if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs) || !parse_reg_num(t3, &rt)) {
                     fprintf(stderr, "Bad RRR operands: %s\n", line);
-                    exit(1);
+                    return 0;
                 }
                 write_instr(output, desc->opcode, rd, rs, rt, 0);
             }
@@ -434,7 +448,7 @@ void generateOutput(FILE *intermediate, FILE *output) {
                 uint64_t imm;
                 if (!parse_reg_num(t1, &rd) || !parse_u64_literal(t2, &imm) || imm > MAX_IMMEDIATE_SIZE) {
                     fprintf(stderr, "Bad RI operands / imm too large: %s\n", line);
-                    exit(1);
+                    return 0;
                 }
                 write_instr(output, desc->opcode, rd, 0, 0, (uint32_t)imm); // NOTE: depends on exact spec for addi/shftli
             }
@@ -442,7 +456,7 @@ void generateOutput(FILE *intermediate, FILE *output) {
                 uint8_t rd, rs;
                 if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs)) {
                     fprintf(stderr, "Bad RR operands: %s\n", line);
-                    exit(1);
+                    return 0;
                 }
                 write_instr(output, desc->opcode, rd, rs, 0, 0);
             }
@@ -450,7 +464,7 @@ void generateOutput(FILE *intermediate, FILE *output) {
                 uint8_t rd;
                 if (!parse_reg_num(t1, &rd)) {
                     fprintf(stderr, "Bad R operand: %s\n", line);
-                    exit(1);
+                    return 0;
                 }
                 write_instr(output, desc->opcode, rd, 0, 0, 0);
             }
@@ -458,7 +472,7 @@ void generateOutput(FILE *intermediate, FILE *output) {
                 uint64_t imm;
                 if (!parse_u64_literal(t1, &imm) || imm > MAX_IMMEDIATE_SIZE) {
                     fprintf(stderr, "Bad L operand / imm too large: %s\n", line);
-                    exit(1);
+                    return 0;
                 }
                 write_instr(output, desc->opcode, 0, 0, 0, (uint32_t)imm);
             }
@@ -468,7 +482,7 @@ void generateOutput(FILE *intermediate, FILE *output) {
                 if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs)
                     || !parse_u64_literal(t3, &imm) || imm > MAX_IMMEDIATE_SIZE) {
                     fprintf(stderr, "Bad RRL operands / imm too large: %s\n", line);
-                    exit(1);
+                    return 0;
                 }
                 write_instr(output, desc->opcode, rd, rs, 0, (uint32_t)imm);
             }
@@ -478,13 +492,13 @@ void generateOutput(FILE *intermediate, FILE *output) {
                 if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs) || !parse_reg_num(t3, &rt)
                     || !parse_u64_literal(t4, &imm) || imm > MAX_IMMEDIATE_SIZE) {
                     fprintf(stderr, "Bad PRIV operands: %s\n", line);
-                    exit(1);
+                    return 0;
                 }
                 write_instr(output, desc->opcode, rd, rs, rt, (uint32_t)imm);
             }
             else {
                 fprintf(stderr, "Unhandled format in Stage 2: %s\n", op);
-                exit(1);
+                return 0;
             }
 
             free(op);
@@ -495,16 +509,16 @@ void generateOutput(FILE *intermediate, FILE *output) {
             uint64_t v;
             if (!tok || !parse_u64_literal(tok, &v)) {
                 fprintf(stderr, "Bad data literal: %s\n", line);
-                exit(1);
+                return 0;
             }
             write_u64(output, v);
             free(tok);
         }
         else {
             fprintf(stderr, "Content outside section: %s\n", line);
-            exit(1);
+            return 0;
         }
-    }
+    } return 1;
 }
 
 int main(int argc, char *argv[]) {
@@ -531,7 +545,12 @@ int main(int argc, char *argv[]) {
     fclose(intermediate);
     
     FILE *intermediate2 = fopen(argv[2], "r");
-    generateOutput(intermediate2, output);
+    if (!generateOutput(intermediate2, output)) {
+        fclose(intermediate2);
+        clearFile(argv[2]);
+        fclose(output);
+        return 1;
+    }
     fclose(intermediate2);
     fclose(output);
     return 0;
