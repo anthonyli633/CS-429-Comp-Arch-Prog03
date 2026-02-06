@@ -261,6 +261,16 @@ void parseInput(FILE *input) {
                 else if (strcmp(instr, "ld") == 0) num_instructions = 12;
                 pc += 4ULL * num_instructions;
             } else {
+                // check if valid data (64 bit unsigned integer)
+                char *tok = parse_token(&p);
+                if (!tok) { fprintf(stderr, "Malformed data line\n"); exit(1); }
+                uint64_t v;
+                if (!parse_u64_literal(tok, &v)) {
+                    fprintf(stderr, "Invalid data literal: %s\n", tok);
+                    free(tok);
+                    exit(1);
+                }
+                free(tok);
                 pc += 8ULL;
             }
         } else {
