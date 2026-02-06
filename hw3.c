@@ -310,11 +310,29 @@ void generateIntermediate(FILE *input, FILE *intermediate) {
                         exit(1);
                     }
                 }
-
                 ld(intermediate, rd, L);
                 free(rd);
                 free(L_str);
             } else {
+                if (strcmp(instr, "brr")) {
+                    char *t1 = parse_token(&p);
+                    if (!t1) { fprintf(stderr, "Malformed brr\n"); exit(1); }
+                    if (t1[0] == ':') {
+                        uint64_t addr = get_addr(t1 + 1);
+                        if (addr == (uint64_t)-1) {
+                            fprintf(stderr, "Unknown label in brr: %s\n", t1);
+                            exit(1);
+                        }
+                        fprintf(intermediate, "\tbrr :%s\n", t1 + 1);
+                    } else if (parse_u64_literal(t1, NULL)) {
+                        fprintf(intermediate, "\tbrr %s\n", t1);
+                    } else {
+                        fprintf(stderr, "Invalid operand for brr: %s\n", t1);
+                        exit(1);
+                    }
+                    free(t1);
+                    continue;
+                }
                 char* token = NULL;
                 fprintf(intermediate, "\t%s", instr);
                 int first = 1;
@@ -407,10 +425,67 @@ bool generateOutput(FILE *intermediate, FILE *output) {
 
             // Multiple parameters
             if (strcmp(op, "mov") == 0) {
+                char *t1 = parse_token(&p);
+                char *t2 = parse_token(&p);
+                char *t3 = parse_token(&p);
+                if (!t1 || !t2 || t3) {
+                    fprintf(stderr, "Invalid mov instruction: %s\n", line);
+                    free(t1); free(t2); free(t3); free(op);
+                    return 0;
+                }
+                
+                uint8_t rd, rs;
+                uint64_t imm;
                 // mov rd, rs
+                if (parse_reg_num(t1, &rd) && parse_reg_num(t2, &rs)) {
+                    write_instr(output, OP_MOV_RR, rd, rs, 0, 0);
+                }
                 // mov rd, L
+                if (parse_reg_num(t1, &rd) && parse_u64_literal(t2, &imm)) {
+                    if (imm > MAX_IMMEDIATE_SIZE) {
+                        fprintf(stderr, "Immediate too large for mov rd, L: %s\n", line);
+                        free(t1); free(t2); free(op);
+                        return 0;
+                    }
+                    write_instr(output, OP_MOV_RL, rd, 0, 0, (uint32_t)imm);
+                }
                 // mov rd, (rs)(L)
+                else if (parse_reg_num(t1, &rd) && t2[0] == '(' && t2[strlen(t2)-1] == ')') {
+                    t2[strlen(t2)-1] = '\0';
+                    char *rs_str = t2 + 1;
+                    if (!parse_reg_num(rs_str, &rs)) {
+                        fprintf(stderr, "Invalid register in mov rd, (rs)(L): %s\n", line);
+                        free(t1); free(t2); free(op);
+                        return 0;
+                    }
+                    if (!parse_u64_literal(t3, &imm) || imm > MAX_IMMEDIATE_SIZE) {
+                        fprintf(stderr, "Invalid/immediate too large in mov rd, (rs)(L): %s\n", line);
+                        free(t1); free(t2); free(t3); free(op);
+                        return 0;
+                    }
+                    write_instr(output, OP_MOV_MR, rd, rs, 0, (uint32_t)imm);
+                }
                 // mov (rd)(L), rs
+                else if (t1[0] == '(' && t1[strlen(t1)-1] == ')' && parse_reg_num(t2, &rs)) {
+                    t1[strlen(t1)-1] = '\0';
+                    char *rd_str = t1 + 1;
+                    if (!parse_reg_num(rd_str, &rd)) {
+                        fprintf(stderr, "Invalid register in mov (rd)(L), rs: %s\n", line);
+                        free(t1); free(t2); free(op);
+                        return 0;
+                    }
+                    if (!parse_u64_literal(t3, &imm) || imm > MAX_IMMEDIATE_SIZE) {
+                        fprintf(stderr, "Invalid/immediate too large in mov (rd)(L), rs: %s\n", line);
+                        free(t1); free(t2); free(t3); free(op);
+                        return 0;
+                    }
+                    write_instr(output, OP_MOV_RM, rd, rs, 0, (uint32_t)imm);
+                }
+                else {
+                    fprintf(stderr, "Invalid mov operands: %s\n", line);
+                    free(t1); free(t2); free(t3); free(op);
+                    return 0;
+                }
 
                 continue;
             }
