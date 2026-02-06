@@ -314,25 +314,6 @@ void generateIntermediate(FILE *input, FILE *intermediate) {
                 free(rd);
                 free(L_str);
             } else {
-                if (strcmp(instr, "brr") == 0) {
-                    char *t1 = parse_token(&p);
-                    if (!t1) { fprintf(stderr, "Malformed brr\n"); exit(1); }
-                    if (t1[0] == ':') {
-                        uint64_t addr = get_addr(t1 + 1);
-                        if (addr == (uint64_t)-1) {
-                            fprintf(stderr, "Unknown label in brr: %s\n", t1);
-                            exit(1);
-                        }
-                        fprintf(intermediate, "\tbrr :%s\n", t1 + 1);
-                    } else if (parse_u64_literal(t1, NULL)) {
-                        fprintf(intermediate, "\tbrr %s\n", t1);
-                    } else {
-                        fprintf(stderr, "Invalid operand for brr: %s\n", t1);
-                        exit(1);
-                    }
-                    free(t1);
-                    continue;
-                }
                 char* token = NULL;
                 fprintf(intermediate, "\t%s", instr);
                 int first = 1;
