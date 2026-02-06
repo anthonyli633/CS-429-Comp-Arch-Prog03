@@ -49,7 +49,8 @@ typedef enum {
     FMT_R,     // rd
     FMT_L,     // L
     FMT_RRL,   // rd, rs, L
-    FMT_PRIV   // rd, rs, rt, L
+    FMT_PRIV,   // rd, rs, rt, L
+    FMT_NONE    // no operands
 } InstrFormat;
 
 typedef struct {
@@ -78,7 +79,7 @@ static const InstrDesc instr_table[] = {
     { "brr",    FMT_L,   OP_BRR_L  },  // brr L
     { "brnz",   FMT_RR,  OP_BRNZ   },  // brnz rd, rs   (adjust if your spec differs)
     { "call",   FMT_R,   OP_CALL   },  // call L
-    { "return", FMT_R,   OP_RETURN },  // return rd  (if your spec uses no operands, change to FMT_L/none)
+    { "return", FMT_NONE,   OP_RETURN },  // return rd  (if your spec uses no operands, change to FMT_L/none)
     { "brgt",   FMT_RRR, OP_BRGT   },  // brgt rd, rs, rt (adjust if your spec differs)
     { "priv",   FMT_PRIV, OP_PRIV  },  // priv rd, rs, rt, L
     { "addf",   FMT_RRR, OP_ADDF },
@@ -414,9 +415,44 @@ bool generateOutput(FILE *intermediate, FILE *output) {
                 continue;
             }
             if (strcmp(op, "brr") == 0) {
+                char *t1 = parse_token(&p);
+                char *t2 = parse_token(&p);
+                if (!t1 || t2) {
+                    fprintf(stderr, "Invalid arguments for brr: %s\n", line);
+                    free(t1); free(t2);
+                    free(op);
+                    return 0;
+                }
                 // brr rd
-                // brr L
-
+                uint8_t rd;
+                uint64_t imm;
+                if (parse_reg_num(t1, &rd)) {
+                    write_instr(output, OP_BRR, rd, 0, 0, 0);
+                } 
+                // brr :LABEL
+                else if (t1[0] == ':') {
+                    uint64_t addr = get_addr(t1 + 1);
+                    if (addr > 0xFFF) {  // because your encoder only has imm12
+                        fprintf(stderr, "brr out of 12-bit range\n");
+                        free(t1); free(op);
+                        return 0;
+                    }
+                    write_instr(output, OP_BRR_L, 0, 0, 0, (uint32_t)addr);
+                }
+                // brr literal (e.g. 123 or 0x1A0)
+                else if (parse_u64_literal(t1, &imm)) {
+                    if (imm > 0xFFF) {
+                        fprintf(stderr, "brr out of 12-bit range\n");
+                        free(t1); free(op);
+                        return 0;
+                    }
+                    write_instr(output, OP_BRR_L, 0, 0, 0, (uint32_t)imm);
+                }
+                else {
+                    fprintf(stderr, "Invalid operand for brr: %s\n", t1);
+                    free(t1); free(op);
+                    return 0;
+                }
                 continue;
             }
 
@@ -495,6 +531,9 @@ bool generateOutput(FILE *intermediate, FILE *output) {
                     return 0;
                 }
                 write_instr(output, desc->opcode, rd, rs, rt, (uint32_t)imm);
+            } 
+            else if (desc->fmt == FMT_NONE) {
+                write_instr(output, desc->opcode, 0, 0, 0, 0);
             }
             else {
                 fprintf(stderr, "Unhandled format in Stage 2: %s\n", op);
