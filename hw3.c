@@ -600,7 +600,12 @@ bool generateOutput(FILE *intermediate, FILE *output) {
 
             if (desc->fmt == FMT_RRR) {
                 uint8_t rd, rs, rt;
-                if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs) || !parse_reg_num(t3, &rt) || t4) {
+                if (!t1 || !t2 || !t3 || t4) {
+                    fprintf(stderr, "Bad RRR format: %s\n", line);
+                    free(t1); free(t2); free(t3); free(t4); free(op);
+                    return 0;
+                }
+                if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs) || !parse_reg_num(t3, &rt)) {
                     fprintf(stderr, "Bad RRR operands: %s\n", line);
                     return 0;
                 }
@@ -609,7 +614,12 @@ bool generateOutput(FILE *intermediate, FILE *output) {
             else if (desc->fmt == FMT_RI) {
                 uint8_t rd;
                 uint64_t imm;
-                if (!parse_reg_num(t1, &rd) || !parse_u64_literal(t2, &imm) || imm > MAX_IMMEDIATE_SIZE || t3) {
+                if (!t1 || !t2 || t3) {
+                    fprintf(stderr, "Bad RI format: %s\n", line);
+                    free(t1); free(t2); free(t3); free(t4); free(op);
+                    return 0;
+                }
+                if (!parse_reg_num(t1, &rd) || !parse_u64_literal(t2, &imm) || imm > MAX_IMMEDIATE_SIZE) {
                     fprintf(stderr, "Bad RI operands / imm too large: %s\n", line);
                     return 0;
                 }
@@ -617,7 +627,12 @@ bool generateOutput(FILE *intermediate, FILE *output) {
             }
             else if (desc->fmt == FMT_RR) {
                 uint8_t rd, rs;
-                if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs) || t3) {
+                if (!t1 || !t2 || t3) {
+                    fprintf(stderr, "Bad RR format: %s\n", line);
+                    free(t1); free(t2); free(t3); free(t4); free(op);
+                    return 0;
+                }
+                if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs)) {
                     fprintf(stderr, "Bad RR operands: %s\n", line);
                     return 0;
                 }
@@ -625,7 +640,12 @@ bool generateOutput(FILE *intermediate, FILE *output) {
             }
             else if (desc->fmt == FMT_R) {
                 uint8_t rd;
-                if (!parse_reg_num(t1, &rd) || t2) {
+                if (!t1 || t2) {
+                    fprintf(stderr, "Bad R format: %s\n", line);
+                    free(t1); free(t2); free(t3); free(t4); free(op);
+                    return 0;
+                }
+                if (!parse_reg_num(t1, &rd)) {
                     fprintf(stderr, "Bad R operand: %s\n", line);
                     return 0;
                 }
@@ -633,7 +653,12 @@ bool generateOutput(FILE *intermediate, FILE *output) {
             }
             else if (desc->fmt == FMT_L) {
                 uint64_t imm;
-                if (!parse_u64_literal(t1, &imm) || imm > MAX_IMMEDIATE_SIZE || t2) {
+                if (!t1 || t2) {
+                    fprintf(stderr, "Bad L format: %s\n", line);
+                    free(t1); free(t2); free(t3); free(t4); free(op);
+                    return 0;
+                }
+                if (!parse_u64_literal(t1, &imm) || imm > MAX_IMMEDIATE_SIZE) {
                     fprintf(stderr, "Bad L operand / imm too large: %s\n", line);
                     return 0;
                 }
@@ -642,8 +667,13 @@ bool generateOutput(FILE *intermediate, FILE *output) {
             else if (desc->fmt == FMT_RRL) {
                 uint8_t rd, rs;
                 uint64_t imm;
+                if (!t1 || !t2 || !t3 || t4) {
+                    fprintf(stderr, "Bad RRL format: %s\n", line);
+                    free(t1); free(t2); free(t3); free(t4); free(op);
+                    return 0;
+                }
                 if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs)
-                    || !parse_u64_literal(t3, &imm) || imm > MAX_IMMEDIATE_SIZE || t4) {
+                    || !parse_u64_literal(t3, &imm) || imm > MAX_IMMEDIATE_SIZE) {
                     fprintf(stderr, "Bad RRL operands / imm too large: %s\n", line);
                     return 0;
                 }
@@ -652,8 +682,13 @@ bool generateOutput(FILE *intermediate, FILE *output) {
             else if (desc->fmt == FMT_PRIV) {
                 uint8_t rd, rs, rt;
                 uint64_t imm;
+                if (!t1 || !t2 || !t3 || !t4 || t5) {
+                    fprintf(stderr, "Bad PRIV format: %s\n", line);
+                    free(t1); free(t2); free(t3); free(t4); free(op);
+                    return 0;
+                }
                 if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs) || !parse_reg_num(t3, &rt)
-                    || !parse_u64_literal(t4, &imm) || imm > MAX_IMMEDIATE_SIZE || t5) {
+                    || !parse_u64_literal(t4, &imm) || imm > MAX_IMMEDIATE_SIZE) {
                     fprintf(stderr, "Bad PRIV operands: %s\n", line);
                     return 0;
                 }

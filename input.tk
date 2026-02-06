@@ -1,5 +1,5 @@
 .code
-	add r1,r1,r1
+	add r1
 	push r1
 	mov (r20)(-237),r31
 	pop r0
