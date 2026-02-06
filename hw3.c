@@ -59,20 +59,29 @@ typedef struct {
 } InstrDesc;
 
 static const InstrDesc instr_table[] = {
-    { "add",    FMT_RRR, OP_ADD    },
-    { "addi",   FMT_RI,  OP_ADDI   },
-    { "sub",    FMT_RRR, OP_SUB    },
-    { "subi",   FMT_RI,  OP_SUBI   },
-    { "xor",    FMT_RRR, OP_XOR    },
-    { "shftli", FMT_RI,  OP_SHFTLI },
-    { "br",     FMT_R,   OP_BR     },
-    { "priv",   FMT_PRIV,OP_PRIV  },
-    { "mov",    FMT_RR,  OP_MOV_RR },
-    { "mov",    FMT_RI,  OP_MOV_RL },
-    { "mov",    FMT_RRL, OP_MOV_MR },
-    { "mov",    FMT_RRL, OP_MOV_RM },
-    { "halt",   FMT_PRIV,OP_PRIV  }, // priv with L=0
-    { NULL,     0,       0         }
+    { "add",    FMT_RRR, OP_ADD  },
+    { "addi",   FMT_RI,  OP_ADDI },
+    { "sub",    FMT_RRR, OP_SUB  },
+    { "subi",   FMT_RI,  OP_SUBI },
+    { "mul",    FMT_RRR, OP_MUL  },
+    { "div",    FMT_RRR, OP_DIV  },
+    { "and",    FMT_RRR, OP_AND  },
+    { "or",     FMT_RRR, OP_OR   },
+    { "xor",    FMT_RRR, OP_XOR  },
+    { "not",    FMT_RR,  OP_NOT  },   // not rd, rs
+    { "shftr",  FMT_RRR, OP_SHFTR  },  // shftr rd, rs, rt
+    { "shftri", FMT_RI,  OP_SHFTRI },  // shftri rd, L
+    { "shftl",  FMT_RRR, OP_SHFTL  },  // shftl rd, rs, rt
+    { "shftli", FMT_RI,  OP_SHFTLI },  // shftli rd, L
+    { "br",     FMT_R,   OP_BR     },  // br rd
+    { "brr",    FMT_R,   OP_BRR    },  // brr rd
+    { "brr",    FMT_L,   OP_BRR_L  },  // brr L
+    { "brnz",   FMT_RR,  OP_BRNZ   },  // brnz rd, rs   (adjust if your spec differs)
+    { "call",   FMT_R,   OP_CALL   },  // call L
+    { "return", FMT_R,   OP_RETURN },  // return rd  (if your spec uses no operands, change to FMT_L/none)
+    { "brgt",   FMT_RRR, OP_BRGT   },  // brgt rd, rs, rt (adjust if your spec differs)
+    { "priv",   FMT_PRIV, OP_PRIV  },  // priv rd, rs, rt, L
+    { NULL,     0,       0},
 };
 
 
@@ -318,6 +327,186 @@ void generateIntermediate(FILE *input, FILE *intermediate) {
     } 
 }
 
+static void write_u32(FILE *out, uint32_t w) {
+    fwrite(&w, sizeof(w), 1, out);
+}
+static void write_u64(FILE *out, uint64_t x) {
+    fwrite(&x, sizeof(x), 1, out);
+}
+static void write_instr(FILE *out, Opcode opcode,
+                        uint8_t rd, uint8_t rs, uint8_t rt,
+                        uint32_t imm12) {
+    if (opcode > 0x1F) {
+        fprintf(stderr, "Opcode out of 5-bit range: 0x%X\n", opcode);
+        exit(1);
+    }
+    if (rd > 31 || rs > 31 || rt > 31) {
+        fprintf(stderr, "Register out of range rd=%u rs=%u rt=%u\n", rd, rs, rt);
+        exit(1);
+    }
+    if (imm12 > 0xFFF) {
+        fprintf(stderr, "Immediate out of 12-bit range: %u\n", imm12);
+        exit(1);
+    }
+
+    uint32_t inst = 0;
+    inst |= ((uint32_t)opcode & 0x1F) << 27;
+    inst |= ((uint32_t)rd     & 0x1F) << 22;
+    inst |= ((uint32_t)rs     & 0x1F) << 17;
+    inst |= ((uint32_t)rt     & 0x1F) << 12;
+    inst |= ((uint32_t)imm12  & 0xFFF);
+
+    write_u32(out, inst);
+}
+
+static const int MAX_REGISTER_SIZE = 0b11111; // 5 bits for register numbers
+static const int MAX_IMMEDIATE_SIZE = 0xFFF; // 12 bits for immediate values (for RI format)
+
+static bool parse_reg_num(const char *tok, uint8_t *out) {
+    if (!tok || tok[0] != 'r') return false;
+    char *end = NULL;
+    long v = strtol(tok + 1, &end, 10);
+    if (*end != '\0' || v < 0 || v > MAX_REGISTER_SIZE) return false;
+    *out = (uint8_t)v;
+    return true;
+}
+
+void generateOutput(FILE *intermediate, FILE *output) {
+    char line[1024];
+    int section = -1; // 0 = code, 1 = data
+    printf("Generating output...\n");
+
+    while (fgets(line, sizeof(line), intermediate)) {
+        printf("Processing line: %s", line);
+        char *p = line;
+        if (*p == ';' || *p == '\n') continue;
+        if (strncmp(p, ".code", 5) == 0) { section = 0; continue; }
+        if (strncmp(p, ".data", 5) == 0) { section = 1; continue; }
+        
+        if (*p != '\t') continue;
+        p++;
+
+        if (section == 0) {
+            char *op = parse_token(&p);
+            if (!op) continue;
+
+            // Multiple parameters
+            if (strcmp(op, "mov") == 0) {
+                // mov rd, rs
+                // mov rd, L
+                // mov rd, (rs)(L)
+                // mov (rd)(L), rs
+
+                continue;
+            }
+            if (strcmp(op, "brr") == 0) {
+                // brr rd
+                // brr L
+
+                continue;
+            }
+
+            const InstrDesc *desc = NULL;
+            for (int i = 0; instr_table[i].name; i++) {
+                if (strcmp(op, instr_table[i].name) == 0) { desc = &instr_table[i]; break; }
+            }
+            if (!desc) {
+                fprintf(stderr, "Unknown instruction in intermediate: %s\n", op);
+                free(op);
+                exit(1);
+            }
+
+            char *t1 = parse_token(&p);
+            char *t2 = parse_token(&p);
+            char *t3 = parse_token(&p);
+            char *t4 = parse_token(&p);
+
+            if (desc->fmt == FMT_RRR) {
+                uint8_t rd, rs, rt;
+                if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs) || !parse_reg_num(t3, &rt)) {
+                    fprintf(stderr, "Bad RRR operands: %s\n", line);
+                    exit(1);
+                }
+                write_instr(output, desc->opcode, rd, rs, rt, 0);
+            }
+            else if (desc->fmt == FMT_RI) {
+                uint8_t rd;
+                uint64_t imm;
+                if (!parse_reg_num(t1, &rd) || !parse_u64_literal(t2, &imm) || imm > MAX_IMMEDIATE_SIZE) {
+                    fprintf(stderr, "Bad RI operands / imm too large: %s\n", line);
+                    exit(1);
+                }
+                write_instr(output, desc->opcode, rd, 0, 0, (uint32_t)imm); // NOTE: depends on exact spec for addi/shftli
+            }
+            else if (desc->fmt == FMT_RR) {
+                uint8_t rd, rs;
+                if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs)) {
+                    fprintf(stderr, "Bad RR operands: %s\n", line);
+                    exit(1);
+                }
+                write_instr(output, desc->opcode, rd, rs, 0, 0);
+            }
+            else if (desc->fmt == FMT_R) {
+                uint8_t rd;
+                if (!parse_reg_num(t1, &rd)) {
+                    fprintf(stderr, "Bad R operand: %s\n", line);
+                    exit(1);
+                }
+                write_instr(output, desc->opcode, rd, 0, 0, 0);
+            }
+            else if (desc->fmt == FMT_L) {
+                uint64_t imm;
+                if (!parse_u64_literal(t1, &imm) || imm > MAX_IMMEDIATE_SIZE) {
+                    fprintf(stderr, "Bad L operand / imm too large: %s\n", line);
+                    exit(1);
+                }
+                write_instr(output, desc->opcode, 0, 0, 0, (uint32_t)imm);
+            }
+            else if (desc->fmt == FMT_RRL) {
+                uint8_t rd, rs;
+                uint64_t imm;
+                if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs)
+                    || !parse_u64_literal(t3, &imm) || imm > MAX_IMMEDIATE_SIZE) {
+                    fprintf(stderr, "Bad RRL operands / imm too large: %s\n", line);
+                    exit(1);
+                }
+                write_instr(output, desc->opcode, rd, rs, 0, (uint32_t)imm);
+            }
+            else if (desc->fmt == FMT_PRIV) {
+                uint8_t rd, rs, rt;
+                uint64_t imm;
+                if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs) || !parse_reg_num(t3, &rt)
+                    || !parse_u64_literal(t4, &imm) || imm > MAX_IMMEDIATE_SIZE) {
+                    fprintf(stderr, "Bad PRIV operands: %s\n", line);
+                    exit(1);
+                }
+                write_instr(output, desc->opcode, rd, rs, rt, (uint32_t)imm);
+            }
+            else {
+                fprintf(stderr, "Unhandled format in Stage 2: %s\n", op);
+                exit(1);
+            }
+
+            free(op);
+            free(t1); free(t2); free(t3); free(t4);
+        }
+        else if (section == 1) {
+            char *tok = parse_token(&p);
+            uint64_t v;
+            if (!tok || !parse_u64_literal(tok, &v)) {
+                fprintf(stderr, "Bad data literal: %s\n", line);
+                exit(1);
+            }
+            write_u64(output, v);
+            free(tok);
+        }
+        else {
+            fprintf(stderr, "Content outside section: %s\n", line);
+            exit(1);
+        }
+    }
+}
+
 int main(int argc, char *argv[]) {
     if (argc != 4) {
         fprintf(stderr, "Incorrect number of arguments\n");
@@ -338,9 +527,12 @@ int main(int argc, char *argv[]) {
     parseInput(input);
     rewind(input);
     generateIntermediate(input, intermediate);
-    
     fclose(input);
     fclose(intermediate);
+    
+    FILE *intermediate2 = fopen(argv[2], "r");
+    generateOutput(intermediate2, output);
+    fclose(intermediate2);
     fclose(output);
     return 0;
 }
