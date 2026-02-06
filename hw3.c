@@ -210,6 +210,7 @@ void parseInput(FILE *input) {
                 exit(1);
             }
             add_label(p + 1, pc);
+            printf("Added label: %s at address 0x%lX\n", p + 1, pc);
         } else if (*p == '.') {
             if (strncmp(p, ".code", 5) == 0) { type = 0; }
             else if (strncmp(p, ".data", 5) == 0) { type = 1; }
@@ -322,7 +323,7 @@ void generateIntermediate(FILE *input, FILE *intermediate) {
                     if (!token) { fprintf(stderr, "Malformed brr\n"); exit(1); }
                     if (token[0] == ':') {
                         uint64_t addr = get_addr(token + 1);
-                        if (addr == (uint64_t)-1 || addr > MAX_IMMEDIATE_SIZE) {
+                        if (addr == (uint64_t)-1) {
                             fprintf(stderr, "brr address out of range: %s\n", token);
                             free(token);
                             exit(1);
