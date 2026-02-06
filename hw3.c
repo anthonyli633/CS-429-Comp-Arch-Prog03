@@ -314,7 +314,7 @@ void generateIntermediate(FILE *input, FILE *intermediate) {
                 free(rd);
                 free(L_str);
             } else {
-                if (strcmp(instr, "brr")) {
+                if (strcmp(instr, "brr") == 0) {
                     char *t1 = parse_token(&p);
                     if (!t1) { fprintf(stderr, "Malformed brr\n"); exit(1); }
                     if (t1[0] == ':') {
