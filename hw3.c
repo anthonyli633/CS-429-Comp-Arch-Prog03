@@ -132,18 +132,6 @@ char *my_strdup(const char *s) {
     if (p) memcpy(p, s, len);
     return p;
 }
-char *my_strndup(const char *s, size_t n) {
-    if (!s) return NULL;
-    size_t len = 0;
-    while (len < n && s[len] != '\0') {
-        len++;
-    }
-    char *p = malloc(len + 1);
-    if (!p) return NULL;
-    memcpy(p, s, len);
-    p[len] = '\0';
-    return p;
-}
 char* parse_token(char **p) {
     while (**p && (isspace((unsigned char)**p) || **p == ',')) (*p)++;
     if (**p == '\0') return NULL;
@@ -156,7 +144,6 @@ char* parse_token(char **p) {
     token[i] = '\0';
     return my_strdup(token);
 }
-
 bool parse_u64_literal(const char *s, uint64_t *out) {
     if (!s || !*s) return false;
     if (s[0] == ':') return false; // label, not literal
@@ -167,6 +154,38 @@ bool parse_u64_literal(const char *s, uint64_t *out) {
     if (errno != 0 || end == s || *end != '\0') return false;
     *out = (uint64_t)v;
     return true;
+}
+bool parse_mem_operand(const char *tok, uint8_t *base, int64_t *off) {
+    if (!tok || !base || !off) return false;
+    const char *p = tok;
+    if (*p != '(') return false;
+    p++;
+    if (*p != 'r') return false;
+    p++;
+    char *end = NULL;
+    errno = 0;
+    long reg = strtol(p, &end, 10);
+    if (errno != 0 || end == p || *end != ')' || reg < 0 || reg > 31)
+        return false;
+    *base = (uint8_t)reg;
+    p = end + 1;
+    if (*p != '(') return false;
+    p++;
+    errno = 0;
+    long long offset = strtoll(p, &end, 0);
+    if (errno != 0 || end == p || *end != ')')
+        return false;
+    p = end + 1;
+    if (*p != '\0') return false;
+
+    *off = (int64_t)offset;
+    return true;
+}
+uint32_t imm12_signed(int64_t x) {
+    if (x < -2048 || x > 2047)
+        return 0xFFFFFFFFu;   // sentinel for "out of range"
+
+    return (uint32_t)(x & 0xFFF);  // two’s complement, low 12 bits
 }
 
 // Evaluate Macros
@@ -438,9 +457,10 @@ bool generateOutput(FILE *intermediate, FILE *output) {
                     free(t1); free(t2); free(t3); free(op);
                     return 0;
                 }
-                
+
                 uint8_t rd, rs;
                 uint64_t imm;
+
                 // mov rd, rs
                 if (parse_reg_num(t1, &rd) && parse_reg_num(t2, &rs)) {
                     write_instr(output, OP_MOV_RR, rd, rs, 0, 0);
@@ -454,41 +474,60 @@ bool generateOutput(FILE *intermediate, FILE *output) {
                     }
                     write_instr(output, OP_MOV_RL, rd, 0, 0, (uint32_t)imm);
                 }
-                // mov rd, (rs)(L)
-                else if (parse_reg_num(t1, &rd) && t2[0] == '(' && t2[strlen(t2)-1] == ')') {
-                    // split by )
-                    char *rs_part = my_strndup(t2 + 1, strchr(t2, ')') - (t2 + 1));
-                    char *L_part = strchr(t2, ')') + 1;
-                    uint8_t rs;
-                    uint64_t L;
-                    if (!parse_reg_num(rs_part, &rs) || !parse_u64_literal(L_part, &L) || L > MAX_IMMEDIATE_SIZE) {
-                        fprintf(stderr, "Invalid mov rd, (rs)(L): %s\n", line);
-                        free(t1); free(t2); free(op); free(rs_part); free(L_part);
+                // mov rd, (rs)(L)   (load)
+                else if (parse_reg_num(t1, &rd) && t2[0] == '(' && t2[strlen(t2) - 1] == ')') {
+                    uint8_t base;
+                    int64_t off;
+
+                    if (!parse_mem_operand(t2, &base, &off)) {
+                        fprintf(stderr, "Invalid memory operand for mov rd,(rs)(L): %s\n", line);
+                        free(t1); free(t2); free(op);
                         return 0;
                     }
-                    write_instr(output, OP_MOV_MR, rd, rs, 0, (uint32_t)L);
+
+                    uint32_t imm12 = imm12_signed(off);
+                    if (imm12 == 0xFFFFFFFFu) {
+                        fprintf(stderr, "mov offset out of signed 12-bit range: %lld\n", (long long)off);
+                        free(t1); free(t2); free(op);
+                        return 0;
+                    }
+
+                    // Convention: opcode OP_MOV_MR, rd=dest, rs=base, imm=offset
+                    write_instr(output, OP_MOV_MR, rd, base, 0, imm12);
                 }
-                // mov (rd)(L), rs
-                else if (t1[0] == '(' && t1[strlen(t1)-1] == ')' && parse_reg_num(t2, &rs)) {
-                    // split by )
-                    char *rd_part = my_strndup(t1 + 1, strchr(t1, ')') - (t1 + 1));
-                    char *L_part = strchr(t1, ')') + 1;
-                    uint8_t rd;
-                    uint64_t L;
-                    if (!parse_reg_num(rd_part, &rd) || !parse_u64_literal(L_part, &L) || L > MAX_IMMEDIATE_SIZE) {
-                        fprintf(stderr, "Invalid mov (rd)(L), rs: %s\n", line);
-                        free(t1); free(t2); free(op); free(rd_part); free(L_part);
+                // mov (rd)(L), rs   (store)
+                else if (t1[0] == '(' && t1[strlen(t1) - 1] == ')' && parse_reg_num(t2, &rs)) {
+                    uint8_t base;
+                    int64_t off;
+
+                    if (!parse_mem_operand(t1, &base, &off)) {
+                        fprintf(stderr, "Invalid memory operand for mov (rd)(L),rs: %s\n", line);
+                        free(t1); free(t2); free(op);
                         return 0;
                     }
+
+                    uint32_t imm12 = imm12_signed(off);
+                    if (imm12 == 0xFFFFFFFFu) {
+                        fprintf(stderr, "mov offset out of signed 12-bit range: %lld\n", (long long)off);
+                        free(t1); free(t2); free(op);
+                        return 0;
+                    }
+
+                    // Convention: opcode OP_MOV_RM, rd=base, rs=src, imm=offset
+                    write_instr(output, OP_MOV_RM, base, rs, 0, imm12);
                 }
                 else {
                     fprintf(stderr, "Invalid mov operands: %s\n", line);
-                    free(t1); free(t2); free(t3); free(op);
+                    free(t1); free(t2); free(op);
                     return 0;
                 }
 
+                free(t1);
+                free(t2);
+                free(op);
                 continue;
             }
+
             if (strcmp(op, "brr") == 0) {
                 char *t1 = parse_token(&p);
                 char *t2 = parse_token(&p);
