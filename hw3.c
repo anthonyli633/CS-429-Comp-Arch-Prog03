@@ -422,7 +422,7 @@ bool generateOutput(FILE *intermediate, FILE *output) {
                     write_instr(output, OP_MOV_RR, rd, rs, 0, 0);
                 }
                 // mov rd, L
-                if (parse_reg_num(t1, &rd) && parse_u64_literal(t2, &imm)) {
+                else if (parse_reg_num(t1, &rd) && parse_u64_literal(t2, &imm)) {
                     if (imm > MAX_IMMEDIATE_SIZE) {
                         fprintf(stderr, "Immediate too large for mov rd, L: %s\n", line);
                         free(t1); free(t2); free(op);
