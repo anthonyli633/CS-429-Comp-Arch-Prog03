@@ -106,7 +106,9 @@ uint64_t get_addr(const char *label) {
         if (strcmp(labels[i].name, label) == 0) {
             return labels[i].addr;
         }
-    } return 0;
+    } 
+
+    return (uint64_t)-1; // not found
 }
 void add_label(const char *name, uint64_t addr) {
     strncpy(labels[label_count].name, name, 63);
