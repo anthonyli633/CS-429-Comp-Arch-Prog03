@@ -7,6 +7,8 @@
 #include <errno.h>
 
 #define MAX_LABELS 1024
+#define MAX_REGISTER_SIZE 0b11111 // 5 bits for register numbers
+#define MAX_IMMEDIATE_SIZE 0xFFF // 12 bits for immediate values (for RI format)
 
 // Instructions
 typedef enum {
@@ -110,7 +112,7 @@ uint64_t get_addr(const char *label) {
         if (strcmp(labels[i].name, label) == 0) {
             return labels[i].addr;
         }
-    } return -1;
+    } return 0;
 }
 
 // String utils
@@ -313,36 +315,30 @@ void generateIntermediate(FILE *input, FILE *intermediate) {
                 ld(intermediate, rd, L);
                 free(rd);
                 free(L_str);
-            } else if (strcmp(instr, "brr") == 0) {
-                char *t1 = parse_token(&p);
-                if (!t1) { fprintf(stderr, "Malformed brr\n"); exit(1); }
-                if (t1[0] == ':') {
-                    uint64_t addr = get_addr(t1 + 1);
-                    if (addr == (uint64_t)-1) {
-                        fprintf(stderr, "Unknown label in brr: %s\n", t1);
-                        exit(1);
-                    }
-                    fprintf(intermediate, "\tbrr :%s\n", t1 + 1);
-                } else if (parse_u64_literal(t1, NULL)) {
-                    fprintf(intermediate, "\tbrr %s\n", t1);
-                } else {
-                    fprintf(stderr, "Invalid operand for brr: %s\n", t1);
-                    exit(1);
-                }
-                free(t1);
-                continue;
             } else {
-                char* token = NULL;
-                fprintf(intermediate, "\t%s", instr);
+                char* token = parse_token(&p);; 
                 int first = 1;
-                do {
-                    token = parse_token(&p);
-                    if (token) {
-                        fprintf(intermediate, "%s%s", (first ? " " : ", "), token);
-                        first = 0;
+                if (strcmp(instr, "brr") == 0) {
+                    if (!token) { fprintf(stderr, "Malformed brr\n"); exit(1); }
+                    if (token[0] == ':') {
+                        uint64_t addr = get_addr(token + 1);
+                        if (addr == (uint64_t)-1 || addr > MAX_IMMEDIATE_SIZE) {
+                            fprintf(stderr, "brr address out of range: %s\n", token);
+                            free(token);
+                            exit(1);
+                        }
+                        fprintf(intermediate, "\tbrr %lu\n", addr);
                         free(token);
-                    } else break;
-                } while (true);
+                        continue;
+                    } 
+                }
+                fprintf(intermediate, "\t%s", instr);
+                while (token) {
+                    fprintf(intermediate, "%s%s", (first ? " " : ", "), token);
+                    first = 0;
+                    free(token);
+                    token = parse_token(&p);
+                }
                 fprintf(intermediate, "\n");
             }
         } else {
@@ -385,9 +381,6 @@ static void write_instr(FILE *out, Opcode opcode,
 
     write_u32(out, inst);
 }
-
-static const int MAX_REGISTER_SIZE = 0b11111; // 5 bits for register numbers
-static const int MAX_IMMEDIATE_SIZE = 0xFFF; // 12 bits for immediate values (for RI format)
 
 static bool parse_reg_num(const char *tok, uint8_t *out) {
     if (!tok || tok[0] != 'r') return false;
