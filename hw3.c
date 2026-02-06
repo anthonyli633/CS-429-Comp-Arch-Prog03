@@ -135,10 +135,10 @@ char *my_strdup(const char *s) {
 char* parse_token(char **p) {
     while (**p && (isspace((unsigned char)**p) || **p == ',')) (*p)++;
     if (**p == '\0') return NULL;
-    char token[100];
+    char token[1000];
     int i = 0;
     while (**p && !isspace((unsigned char)**p) && **p != ',') {
-        if (i < 99) token[i++] = **p;
+        if (i < 999) token[i++] = **p;
         (*p)++;
     }
     token[i] = '\0';
@@ -235,13 +235,21 @@ void parseInput(FILE *input) {
         if (*p == ';' || *p == '\n') continue;
         else if (*p == ':') {
             // Check valid label (< 256 chars, nonempty, no spaces)
-            rstrip(p + 1);
-            if (strlen(p + 1) == 0 || strlen(p + 1) > 255 || strchr(p + 1, ' ')) {
+            p++;
+            char *label = parse_token(&p);
+            if (!label || strlen(label) == 0 || strlen(label) > 255) {
                 fprintf(stderr, "Invalid label: %s\n", p + 1);
                 exit(1);
             }
-            add_label(p + 1, pc);
-            printf("Added label: %s at address 0x%lX\n", p + 1, pc);
+            add_label(label, pc);
+            printf("Added label: %s at address 0x%lX\n", label, pc);
+            free(label);
+            char *tok2 = parse_token(&p);
+            if (tok2) {
+                fprintf(stderr, "Extra token after label: %s\n", tok2);
+                free(tok2);
+                exit(1);
+            }
         } else if (*p == '.') {
             rstrip(p);
             // check if .code and nothing else after
@@ -273,6 +281,12 @@ void parseInput(FILE *input) {
                     exit(1);
                 }
                 free(tok);
+                char *tok2 = parse_token(&p);
+                if (tok2) {
+                    fprintf(stderr, "Extra token in data line: %s\n", tok2);
+                    free(tok2);
+                    exit(1);
+                }
                 pc += 8ULL;
             }
         } else {
