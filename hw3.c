@@ -425,13 +425,19 @@ static void write_instr(FILE *out, Opcode opcode,
     write_u32(out, inst);
 }
 
+static char* valid_registers [] = {
+    "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
+    "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
+    "r16", "r17", "r18", "r19", "r20", "r21", "r22", "r23",
+    "r24", "r25", "r26", "r27", "r28", "r29", "r30", "r31"
+};
 static bool parse_reg_num(const char *tok, uint8_t *out) {
-    if (!tok || tok[0] != 'r') return false;
-    char *end = NULL;
-    long v = strtol(tok + 1, &end, 10);
-    if (*end != '\0' || v < 0 || v > MAX_REGISTER_SIZE) return false;
-    *out = (uint8_t)v;
-    return true;
+    for (int i = 0; i < 32; i++) {
+        if (strcmp(tok, valid_registers[i]) == 0) {
+            *out = (uint8_t)i;
+            return true;
+        }
+    } return false;
 }
 
 void clearFile(const char* path) {
@@ -598,7 +604,7 @@ bool generateOutput(FILE *intermediate, FILE *output) {
 
             if (desc->fmt == FMT_RRR) {
                 uint8_t rd, rs, rt;
-                if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs) || !parse_reg_num(t3, &rt)) {
+                if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs) || !parse_reg_num(t3, &rt) || t4) {
                     fprintf(stderr, "Bad RRR operands: %s\n", line);
                     return 0;
                 }
@@ -607,7 +613,7 @@ bool generateOutput(FILE *intermediate, FILE *output) {
             else if (desc->fmt == FMT_RI) {
                 uint8_t rd;
                 uint64_t imm;
-                if (!parse_reg_num(t1, &rd) || !parse_u64_literal(t2, &imm) || imm > MAX_IMMEDIATE_SIZE) {
+                if (!parse_reg_num(t1, &rd) || !parse_u64_literal(t2, &imm) || imm > MAX_IMMEDIATE_SIZE || t3) {
                     fprintf(stderr, "Bad RI operands / imm too large: %s\n", line);
                     return 0;
                 }
@@ -615,7 +621,7 @@ bool generateOutput(FILE *intermediate, FILE *output) {
             }
             else if (desc->fmt == FMT_RR) {
                 uint8_t rd, rs;
-                if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs)) {
+                if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs) || t3) {
                     fprintf(stderr, "Bad RR operands: %s\n", line);
                     return 0;
                 }
@@ -623,7 +629,7 @@ bool generateOutput(FILE *intermediate, FILE *output) {
             }
             else if (desc->fmt == FMT_R) {
                 uint8_t rd;
-                if (!parse_reg_num(t1, &rd)) {
+                if (!parse_reg_num(t1, &rd) || t2) {
                     fprintf(stderr, "Bad R operand: %s\n", line);
                     return 0;
                 }
@@ -631,7 +637,7 @@ bool generateOutput(FILE *intermediate, FILE *output) {
             }
             else if (desc->fmt == FMT_L) {
                 uint64_t imm;
-                if (!parse_u64_literal(t1, &imm) || imm > MAX_IMMEDIATE_SIZE) {
+                if (!parse_u64_literal(t1, &imm) || imm > MAX_IMMEDIATE_SIZE || t2) {
                     fprintf(stderr, "Bad L operand / imm too large: %s\n", line);
                     return 0;
                 }
@@ -641,7 +647,7 @@ bool generateOutput(FILE *intermediate, FILE *output) {
                 uint8_t rd, rs;
                 uint64_t imm;
                 if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs)
-                    || !parse_u64_literal(t3, &imm) || imm > MAX_IMMEDIATE_SIZE) {
+                    || !parse_u64_literal(t3, &imm) || imm > MAX_IMMEDIATE_SIZE || t4) {
                     fprintf(stderr, "Bad RRL operands / imm too large: %s\n", line);
                     return 0;
                 }
@@ -651,13 +657,18 @@ bool generateOutput(FILE *intermediate, FILE *output) {
                 uint8_t rd, rs, rt;
                 uint64_t imm;
                 if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs) || !parse_reg_num(t3, &rt)
-                    || !parse_u64_literal(t4, &imm) || imm > MAX_IMMEDIATE_SIZE) {
+                    || !parse_u64_literal(t4, &imm) || imm > MAX_IMMEDIATE_SIZE || t4) {
                     fprintf(stderr, "Bad PRIV operands: %s\n", line);
                     return 0;
                 }
                 write_instr(output, desc->opcode, rd, rs, rt, (uint32_t)imm);
             } 
             else if (desc->fmt == FMT_NONE) {
+                if (t1) {
+                    fprintf(stderr, "Unexpected operand for no-operand instruction: %s\n", line);
+                    free(t1); free(t2); free(t3); free(t4); free(op);
+                    return 0;
+                }
                 write_instr(output, desc->opcode, 0, 0, 0, 0);
             }
             else {
