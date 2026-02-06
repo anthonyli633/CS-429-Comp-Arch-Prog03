@@ -147,6 +147,7 @@ char* parse_token(char **p) {
 bool parse_u64_literal(const char *s, uint64_t *out) {
     if (!s || !*s) return false;
     if (s[0] == ':') return false; // label, not literal
+    if (s[0] == '-') return false; // no signed literals
 
     errno = 0;
     char *end = NULL;
