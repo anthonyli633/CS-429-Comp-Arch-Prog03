@@ -80,7 +80,7 @@ static const InstrDesc instr_table[] = {
     { "brr",    FMT_R,   OP_BRR    },  // brr rd
     { "brr",    FMT_L,   OP_BRR_L  },  // brr L
     { "brnz",   FMT_RR,  OP_BRNZ   },  // brnz rd, rs   (adjust if your spec differs)
-    { "call",   FMT_R,   OP_CALL   },  // call L
+    { "call",   FMT_R,   OP_CALL   },  // call rd
     { "return", FMT_NONE,   OP_RETURN },  // return rd  (if your spec uses no operands, change to FMT_L/none)
     { "brgt",   FMT_RRR, OP_BRGT   },  // brgt rd, rs, rt (adjust if your spec differs)
     { "priv",   FMT_PRIV, OP_PRIV  },  // priv rd, rs, rt, L
@@ -101,18 +101,23 @@ typedef struct {
 static Label labels[MAX_LABELS];
 static int label_count = 0;
 
-void add_label(const char *name, uint64_t addr) {
-    strncpy(labels[label_count].name, name, 63);
-    labels[label_count].name[63] = '\0';
-    labels[label_count].addr = addr;
-    label_count++;
-}
 uint64_t get_addr(const char *label) {
     for (int i = 0; i < label_count; i++) {
         if (strcmp(labels[i].name, label) == 0) {
             return labels[i].addr;
         }
     } return 0;
+}
+void add_label(const char *name, uint64_t addr) {
+    // check for dups
+    if (get_addr(name) != 0) {
+        fprintf(stderr, "Duplicate label: %s\n", name);
+        exit(1);
+    }
+    strncpy(labels[label_count].name, name, 63);
+    labels[label_count].name[63] = '\0';
+    labels[label_count].addr = addr;
+    label_count++;
 }
 
 // String utils
@@ -184,8 +189,7 @@ bool parse_mem_operand(const char *tok, uint8_t *base, int64_t *off) {
 }
 uint32_t imm12_signed(int64_t x) {
     if (x < -2048 || x > 2047)
-        return 0xFFFFFFFFu;   // sentinel for "out of range"
-
+        return 0xFFFFFFFFu;   // out of range
     return (uint32_t)(x & 0xFFF);  // two’s complement, low 12 bits
 }
 
@@ -244,8 +248,10 @@ void parseInput(FILE *input) {
             add_label(p + 1, pc);
             printf("Added label: %s at address 0x%lX\n", p + 1, pc);
         } else if (*p == '.') {
-            if (strncmp(p, ".code", 5) == 0) { type = 0; }
-            else if (strncmp(p, ".data", 5) == 0) { type = 1; }
+            rstrip(p);
+            // check if .code and nothing else after
+            if (strncmp(p, ".code", 5) == 0 && p[5] == '\0') { type = 0; }
+            else if (strncmp(p, ".data", 5) == 0 && p[5] == '\0') { type = 1; }
             else { fprintf(stderr, "Unknown section\n"); exit(1); }
         } else if (*p == '\t') {
             if (type == -1) { fprintf(stderr, "Instruction outside of .code/.data section\n"); exit(1); }
@@ -364,15 +370,9 @@ void generateIntermediate(FILE *input, FILE *intermediate) {
                 if (strcmp(instr, "brr") == 0) {
                     if (!token) { fprintf(stderr, "Malformed brr\n"); exit(1); }
                     if (token[0] == ':') {
-                        uint64_t addr = get_addr(token + 1);
-                        if (addr == (uint64_t)-1) {
-                            fprintf(stderr, "brr address out of range: %s\n", token);
-                            free(token);
-                            exit(1);
-                        }
-                        fprintf(intermediate, "\tbrr %lu\n", addr);
+                        fprintf(stderr, "brr address out of range: %s\n", token);
                         free(token);
-                        continue;
+                        exit(1);
                     } 
                 }
                 fprintf(intermediate, "\t%s", instr);

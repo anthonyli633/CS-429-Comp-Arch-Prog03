@@ -1,3 +1,52 @@
-.data
-	-1
-	fikky
+; each line should be invalid for one reason or another
+; remove each line one by one and it should still error until the file is gone
+; INVALID DIRECTIVES
+; INVALID LINES (leave directives)
+.code
+	call r0,r0,r0
+	add r0,r0,r00
+	add r0,0,r01
+; leave this label
+:L0
+	addi r0,-13489
+	addi r0,-2049
+	addi r0,2048
+	addi r0,:L0
+	sub r0,r0,r0,r0
+	sub r0,r0,r0,0
+	sub l0
+	subi r0,-2344
+	shftri r0,-3489
+	shftli r0,-348
+	shftli r0,r1
+	shftli r0,:L0
+	br r0,r0
+	brr -2049
+	brr 2048
+	brr -r0
+	return r0
+	priv r0,r0,r32,0
+	priv r0,r0,r0,1
+	priv r0,r0,r0,18394
+	priv r0,r0,r0,5
+	priv r0,r0,r0,:L0
+	mov r0,(0)(-330)
+	mov r0,(r0)(-2049)
+	mov r0,(r0)(2048)
+	mov r0,(r0)(2047
+	mov r0,r0,405
+	mov r0,-234
+	mov r0,4096
+	mov (0)(-330),r0
+	mov (r0)(-2049),r0
+	mov (r0)(2048),r0
+	mov (r0)(2047,r0
+	mov r0)(2047),r0
+	mov r0,405,r0
+	clr r0,r0
+	ld r0,-3489
+	ld r0,-:L0
+	ld r0,18446744073709551616
+	push 30
+	pop :r30
+	add r0,r0,r0                                                                j
