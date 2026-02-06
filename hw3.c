@@ -298,10 +298,12 @@ void generateIntermediate(FILE *input, FILE *intermediate) {
             } else {
                 char* token = NULL;
                 fprintf(intermediate, "\t%s", instr);
+                int first = 1;
                 do {
                     token = parse_token(&p);
                     if (token) {
-                        fprintf(intermediate, " %s", token);
+                        fprintf(intermediate, "%s%s", (first ? " " : ", "), token);
+                        first = 0;
                         free(token);
                     } else break;
                 } while (true);

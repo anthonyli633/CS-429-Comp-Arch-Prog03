@@ -1,23 +1,23 @@
 .code
-	add r1 r1 r1
+	add r1, r1, r1
 	mov (r31)(-8), r1
 	subi r31, 8
-	mov (r20)(-237) r31
+	mov (r20)(-237), r31
 	mov r0, (r31)(0)
 	addi r31, 8
-	mov r20 (r31)(-237)
+	mov r20, (r31)(-237)
 	call r0
-	brnz r0 r1
-	mov (r1)(-2048) r0
-	mov (r1)(2047) r0
-	mov r0 (r1)(-2048)
-	mov r0 (r1)(2047)
+	brnz r0, r1
+	mov (r1)(-2048), r0
+	mov (r1)(2047), r0
+	mov r0, (r1)(-2048)
+	mov r0, (r1)(2047)
 	priv r0, r0, r0, 0
 	xor r0, r0, r0
-	add r0 r21 r1
+	add r0, r21, r1
 	mov (r31)(-8), r0
 	subi r31, 8
-	addi r0 4095
+	addi r0, 4095
 	priv r0, r1, r0, 3
 	priv r1, r0, r0, 4
 	xor r0, r0, r0
