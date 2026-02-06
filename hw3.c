@@ -109,11 +109,6 @@ uint64_t get_addr(const char *label) {
     } return 0;
 }
 void add_label(const char *name, uint64_t addr) {
-    // check for dups
-    if (get_addr(name) != 0) {
-        fprintf(stderr, "Duplicate label: %s\n", name);
-        exit(1);
-    }
     strncpy(labels[label_count].name, name, 63);
     labels[label_count].name[63] = '\0';
     labels[label_count].addr = addr;
@@ -601,6 +596,7 @@ bool generateOutput(FILE *intermediate, FILE *output) {
             char *t2 = parse_token(&p);
             char *t3 = parse_token(&p);
             char *t4 = parse_token(&p);
+            char *t5 = parse_token(&p);
 
             if (desc->fmt == FMT_RRR) {
                 uint8_t rd, rs, rt;
@@ -657,7 +653,7 @@ bool generateOutput(FILE *intermediate, FILE *output) {
                 uint8_t rd, rs, rt;
                 uint64_t imm;
                 if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs) || !parse_reg_num(t3, &rt)
-                    || !parse_u64_literal(t4, &imm) || imm > MAX_IMMEDIATE_SIZE || t4) {
+                    || !parse_u64_literal(t4, &imm) || imm > MAX_IMMEDIATE_SIZE || t5) {
                     fprintf(stderr, "Bad PRIV operands: %s\n", line);
                     return 0;
                 }
