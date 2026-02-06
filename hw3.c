@@ -132,6 +132,18 @@ char *my_strdup(const char *s) {
     if (p) memcpy(p, s, len);
     return p;
 }
+char *my_strndup(const char *s, size_t n) {
+    if (!s) return NULL;
+    size_t len = 0;
+    while (len < n && s[len] != '\0') {
+        len++;
+    }
+    char *p = malloc(len + 1);
+    if (!p) return NULL;
+    memcpy(p, s, len);
+    p[len] = '\0';
+    return p;
+}
 char* parse_token(char **p) {
     while (**p && (isspace((unsigned char)**p) || **p == ',')) (*p)++;
     if (**p == '\0') return NULL;
@@ -444,11 +456,30 @@ bool generateOutput(FILE *intermediate, FILE *output) {
                 }
                 // mov rd, (rs)(L)
                 else if (parse_reg_num(t1, &rd) && t2[0] == '(' && t2[strlen(t2)-1] == ')') {
-                    
+                    // split by )
+                    char *rs_part = my_strndup(t2 + 1, strchr(t2, ')') - (t2 + 1));
+                    char *L_part = strchr(t2, ')') + 1;
+                    uint8_t rs;
+                    uint64_t L;
+                    if (!parse_reg_num(rs_part, &rs) || !parse_u64_literal(L_part, &L) || L > MAX_IMMEDIATE_SIZE) {
+                        fprintf(stderr, "Invalid mov rd, (rs)(L): %s\n", line);
+                        free(t1); free(t2); free(op); free(rs_part); free(L_part);
+                        return 0;
+                    }
+                    write_instr(output, OP_MOV_MR, rd, rs, 0, (uint32_t)L);
                 }
                 // mov (rd)(L), rs
                 else if (t1[0] == '(' && t1[strlen(t1)-1] == ')' && parse_reg_num(t2, &rs)) {
-                    
+                    // split by )
+                    char *rd_part = my_strndup(t1 + 1, strchr(t1, ')') - (t1 + 1));
+                    char *L_part = strchr(t1, ')') + 1;
+                    uint8_t rd;
+                    uint64_t L;
+                    if (!parse_reg_num(rd_part, &rd) || !parse_u64_literal(L_part, &L) || L > MAX_IMMEDIATE_SIZE) {
+                        fprintf(stderr, "Invalid mov (rd)(L), rs: %s\n", line);
+                        free(t1); free(t2); free(op); free(rd_part); free(L_part);
+                        return 0;
+                    }
                 }
                 else {
                     fprintf(stderr, "Invalid mov operands: %s\n", line);
