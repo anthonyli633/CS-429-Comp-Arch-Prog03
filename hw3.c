@@ -7,7 +7,7 @@
 #include <stdbool.h>
 #include <errno.h>
 
-#define MAX_LABELS 1024
+#define MAX_LABELS 10000
 #define MAX_IMMEDIATE_SIZE 0xFFF // 12 bits for immediate values
 #define MAX_LINE 1024
 
@@ -209,7 +209,6 @@ static bool parse_u64_decimal_or_label(const char *tok, uint64_t *out) {
     tmp[sizeof(tmp) - 1] = '\0';
     size_t n = strlen(tmp);
     while (n && isspace((unsigned char)tmp[n - 1])) tmp[--n] = '\0';
-    if (n && (tmp[n - 1] == 'u' || tmp[n - 1] == 'U')) tmp[--n] = '\0';
 
     if (tmp[0] == ':') {
         if (!is_valid_label_name(tmp + 1)) return false;
