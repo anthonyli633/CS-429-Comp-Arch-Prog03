@@ -203,9 +203,9 @@ static char *parse_token(char **p) {
 static bool parse_u64_decimal_or_label(const char *tok, uint64_t *out) {
     if (!tok || !*tok) return false;
 
-    // optional u/U suffix (like working code)
     char tmp[512];
     strncpy(tmp, tok, sizeof(tmp) - 1);
+    if (sizeof(tok) > sizeof(tmp)) return false;
     tmp[sizeof(tmp) - 1] = '\0';
     size_t n = strlen(tmp);
     while (n && isspace((unsigned char)tmp[n - 1])) tmp[--n] = '\0';
