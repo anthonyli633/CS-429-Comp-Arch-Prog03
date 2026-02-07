@@ -1,3 +1,4 @@
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,9 +8,8 @@
 #include <errno.h>
 
 #define MAX_LABELS 1024
-#define MAX_LINE   1024
-#define MAX_LABEL_NAME 64
-#define MAX_IMMEDIATE_U12 0xFFF
+#define MAX_IMMEDIATE_SIZE 0xFFF // 12 bits for immediate values
+#define MAX_LINE 1024
 
 typedef enum {
     OP_AND    = 0x00,
@@ -22,7 +22,7 @@ typedef enum {
     OP_SHFTLI = 0x07,
     OP_BR     = 0x08,
     OP_BRR    = 0x09,   // brr rd
-    OP_BRR_L  = 0x0A,   // brr L (signed 12-bit instruction offset)
+    OP_BRR_L  = 0x0A,   // brr L (signed PC-relative imm12)
     OP_BRNZ   = 0x0B,
     OP_CALL   = 0x0C,
     OP_RETURN = 0x0D,
@@ -30,7 +30,7 @@ typedef enum {
     OP_PRIV   = 0x0F,
     OP_MOV_MR = 0x10, // mov rd, (rs)(L)
     OP_MOV_RR = 0x11, // mov rd, rs
-    OP_MOV_RL = 0x12, // mov rd, L
+    OP_MOV_RL = 0x12, // mov rd, L (unsigned imm12)
     OP_MOV_RM = 0x13, // mov (rd)(L), rs
     OP_ADDF   = 0x14,
     OP_SUBF   = 0x15,
@@ -45,14 +45,14 @@ typedef enum {
 } Opcode;
 
 typedef enum {
-    FMT_RRR,   // rd, rs, rt
-    FMT_RI,    // rd, L
-    FMT_RR,    // rd, rs
-    FMT_R,     // rd
-    FMT_L,     // L
-    FMT_RRL,   // rd, rs, L
-    FMT_PRIV,  // rd, rs, rt, L
-    FMT_NONE   // no operands
+    FMT_RRR,    // rd, rs, rt
+    FMT_RI,     // rd, L
+    FMT_RR,     // rd, rs
+    FMT_R,      // rd
+    FMT_L,      // L
+    FMT_RRL,    // rd, rs, L
+    FMT_PRIV,   // rd, rs, rt, L
+    FMT_NONE
 } InstrFormat;
 
 typedef struct {
@@ -71,37 +71,37 @@ static const InstrDesc instr_table[] = {
     { "and",    FMT_RRR, OP_AND  },
     { "or",     FMT_RRR, OP_OR   },
     { "xor",    FMT_RRR, OP_XOR  },
-    { "not",    FMT_RR,  OP_NOT  },
+    { "not",    FMT_RR,  OP_NOT  },     // not rd, rs
     { "shftr",  FMT_RRR, OP_SHFTR  },
-    { "shftri", FMT_RI,  OP_SHFTRI },
+    { "shftri", FMT_RI,  OP_SHFTRI },   // shftri rd, L (unsigned)
     { "shftl",  FMT_RRR, OP_SHFTL  },
-    { "shftli", FMT_RI,  OP_SHFTLI },
+    { "shftli", FMT_RI,  OP_SHFTLI },   // shftli rd, L (unsigned)
     { "br",     FMT_R,   OP_BR     },
-    { "brnz",   FMT_RR,  OP_BRNZ   },
+    { "brnz",   FMT_RR,  OP_BRNZ   },   // brnz rd, rs  (per your original)
     { "call",   FMT_R,   OP_CALL   },
-    { "return", FMT_NONE,OP_RETURN },
+    { "return", FMT_NONE, OP_RETURN },
     { "brgt",   FMT_RRR, OP_BRGT   },
-    { "priv",   FMT_PRIV,OP_PRIV   },
+    { "priv",   FMT_PRIV, OP_PRIV  },
     { "addf",   FMT_RRR, OP_ADDF },
     { "subf",   FMT_RRR, OP_SUBF },
     { "mulf",   FMT_RRR, OP_MULF },
     { "divf",   FMT_RRR, OP_DIVF },
-    { NULL,     0,       0}
+    { NULL,     0,       0},
 };
 
-static void dief(const char *msg, const char *line) {
-    if (line) fprintf(stderr, "Error: %s\nLine: %s\n", msg, line);
-    else      fprintf(stderr, "Error: %s\n", msg);
-    exit(1);
-}
-
 typedef struct {
-    char name[MAX_LABEL_NAME];
+    char name[256];
     uint64_t addr;
 } Label;
 
 static Label labels[MAX_LABELS];
 static int label_count = 0;
+
+static void dief(const char *msg, const char *line) {
+    if (line) fprintf(stderr, "%s: %s\n", msg, line);
+    else fprintf(stderr, "%s\n", msg);
+    exit(1);
+}
 
 static int is_valid_label_name(const char *s) {
     if (!s || !*s) return 0;
@@ -112,97 +112,137 @@ static int is_valid_label_name(const char *s) {
     return 1;
 }
 
-static uint64_t get_addr(const char *label) {
+static int find_label_index(const char *name) {
     for (int i = 0; i < label_count; i++) {
-        if (strcmp(labels[i].name, label) == 0) return labels[i].addr;
+        if (strcmp(labels[i].name, name) == 0) return i;
     }
-    return (uint64_t)-1;
+    return -1;
 }
 
-static void add_label(const char *name, uint64_t addr, const char *raw_line) {
-    if (!is_valid_label_name(name)) dief("Invalid label name", raw_line);
-    for (int i = 0; i < label_count; i++) {
-        if (strcmp(labels[i].name, name) == 0) dief("Duplicate label", raw_line);
-    }
-    if (label_count >= MAX_LABELS) dief("Too many labels", raw_line);
+static uint64_t get_addr(const char *label) {
+    int idx = find_label_index(label);
+    if (idx < 0) return (uint64_t)-1;
+    return labels[idx].addr;
+}
 
-    strncpy(labels[label_count].name, name, MAX_LABEL_NAME - 1);
-    labels[label_count].name[MAX_LABEL_NAME - 1] = '\0';
+static void add_label_checked(const char *name, uint64_t addr) {
+    if (!is_valid_label_name(name)) dief("Invalid label name", name);
+    if (label_count >= MAX_LABELS) dief("Too many labels", NULL);
+    if (find_label_index(name) >= 0) dief("Duplicate label", name);
+
+    strncpy(labels[label_count].name, name, sizeof(labels[label_count].name) - 1);
+    labels[label_count].name[sizeof(labels[label_count].name) - 1] = '\0';
     labels[label_count].addr = addr;
     label_count++;
 }
 
-static void trim_line_inplace(char *line) {
-    // remove comment starting at ';'
-    char *c = strchr(line, ';');
-    if (c) *c = '\0';
-
-    // strip trailing whitespace
+static void trim_comment_and_trailing_ws(char *line) {
+    char *semi = strchr(line, ';');
+    if (semi) *semi = '\0';
     size_t n = strlen(line);
-    while (n > 0 && isspace((unsigned char)line[n - 1])) {
-        line[--n] = '\0';
-    }
+    while (n > 0 && isspace((unsigned char)line[n - 1])) line[--n] = '\0';
 }
 
 static int line_has_non_ws(const char *s) {
-    for (int i = 0; s[i]; i++) if (!isspace((unsigned char)s[i])) return 1;
+    for (int i = 0; s[i]; i++) {
+        if (!isspace((unsigned char)s[i])) return 1;
+    }
     return 0;
 }
 
-static void enforce_leading_space_rule(const char *raw_line) {
+static void enforce_no_leading_spaces(const char *raw_line) {
     if (raw_line && raw_line[0] == ' ') {
-        dief("Leading spaces are invalid (must start with tab for statements)", raw_line);
+        dief("Leading spaces are invalid (statements must start with a tab)", raw_line);
     }
 }
 
-static void enforce_tab_rule_if_statement(const char *raw_line, const char *ptr_trimmed) {
-    if (!ptr_trimmed || *ptr_trimmed == '\0') return;
-    if (strncmp(ptr_trimmed, ".code", 5) == 0) return;
-    if (strncmp(ptr_trimmed, ".data", 5) == 0) return;
-    if (*ptr_trimmed == ':') return;
+static void enforce_tab_rule_if_statement(const char *raw_line, const char *trimmed_ptr) {
+    if (!trimmed_ptr || *trimmed_ptr == '\0') return;
+    if (strncmp(trimmed_ptr, ".code", 5) == 0) return;
+    if (strncmp(trimmed_ptr, ".data", 5) == 0) return;
+    if (*trimmed_ptr == ':') return;
 
-    if (raw_line[0] != '\t') {
+    if (!raw_line || raw_line[0] != '\t') {
         dief("Statement line must begin with a tab", raw_line);
     }
 }
 
-static void enforce_label_only(const char *trimmed_ptr, const char *raw_line) {
-    // trimmed_ptr points at ':'
-    const char *p = trimmed_ptr + 1;
-    if (!(isalpha((unsigned char)*p) || *p == '_')) dief("Invalid label name", raw_line);
+static void enforce_label_only(const char *ptr) {
+    // ptr points to ':' in the trimmed line (comments already removed)
+    const char *p = ptr + 1;
+    if (!(isalpha((unsigned char)*p) || *p == '_')) dief("Invalid label name", ptr);
     p++;
     while (isalnum((unsigned char)*p) || *p == '_') p++;
-
-    // after label token, only whitespace allowed
     while (*p) {
-        if (!isspace((unsigned char)*p)) dief("Label must be alone on its line", raw_line);
+        if (!isspace((unsigned char)*p)) dief("Label must be alone on its line", ptr);
         p++;
     }
 }
 
+// token parser: uses spaces, commas, tabs as separators
 static char *my_strdup(const char *s) {
     size_t len = strlen(s) + 1;
-    char *p = (char*)malloc(len);
-    if (!p) return NULL;
-    memcpy(p, s, len);
+    char *p = (char *)malloc(len);
+    if (p) memcpy(p, s, len);
     return p;
 }
 
-static char* parse_token(char **p) {
+static char *parse_token(char **p) {
     while (**p && (isspace((unsigned char)**p) || **p == ',')) (*p)++;
     if (**p == '\0') return NULL;
-
-    char token[256];
+    char buf[512];
     int i = 0;
     while (**p && !isspace((unsigned char)**p) && **p != ',') {
-        if (i < (int)sizeof(token) - 1) token[i++] = **p;
+        if (i < (int)sizeof(buf) - 1) buf[i++] = **p;
         (*p)++;
     }
-    token[i] = '\0';
-    return my_strdup(token);
+    buf[i] = '\0';
+    return my_strdup(buf);
 }
 
-static bool parse_u64_anybase_strict(const char *s, uint64_t *out) {
+static bool parse_u64_decimal_or_label(const char *tok, uint64_t *out) {
+    if (!tok || !*tok) return false;
+
+    // optional u/U suffix (like working code)
+    char tmp[512];
+    strncpy(tmp, tok, sizeof(tmp) - 1);
+    tmp[sizeof(tmp) - 1] = '\0';
+    size_t n = strlen(tmp);
+    while (n && isspace((unsigned char)tmp[n - 1])) tmp[--n] = '\0';
+    if (n && (tmp[n - 1] == 'u' || tmp[n - 1] == 'U')) tmp[--n] = '\0';
+
+    if (tmp[0] == ':') {
+        if (!is_valid_label_name(tmp + 1)) return false;
+        uint64_t addr = get_addr(tmp + 1);
+        if (addr == (uint64_t)-1) return false;
+        *out = addr;
+        return true;
+    }
+
+    if (tmp[0] == '-') return false;
+
+    errno = 0;
+    char *end = NULL;
+    unsigned long long v = strtoull(tmp, &end, 10);
+    if (errno == ERANGE) return false;
+    if (!end || *end != '\0') return false;
+    *out = (uint64_t)v;
+    return true;
+}
+
+// general int64 (for branch offsets / mem offsets). base 0 allowed.
+static bool parse_i64_literal(const char *s, int64_t *out) {
+    if (!s || !*s) return false;
+    errno = 0;
+    char *end = NULL;
+    long long v = strtoll(s, &end, 0);
+    if (errno != 0) return false;
+    if (!end || *end != '\0') return false;
+    *out = (int64_t)v;
+    return true;
+}
+
+static bool parse_u64_literal_base0_unsigned(const char *s, uint64_t *out) {
     if (!s || !*s) return false;
     if (s[0] == ':') return false;
     if (s[0] == '-') return false;
@@ -210,54 +250,22 @@ static bool parse_u64_anybase_strict(const char *s, uint64_t *out) {
     errno = 0;
     char *end = NULL;
     unsigned long long v = strtoull(s, &end, 0);
-    if (errno == ERANGE) return false;
     if (errno != 0) return false;
-    if (!end || end == s || *end != '\0') return false;
-
+    if (!end || *end != '\0') return false;
     *out = (uint64_t)v;
     return true;
 }
-
-// For .data lines: strict unsigned decimal, 0 <= v <= UINT64_MAX
-static bool parse_u64_decimal_strict(const char *s, uint64_t *out) {
-    if (!s || !*s) return false;
-    if (s[0] == '-') return false;
-    if (s[0] == ':') return false; // data must be literal
-
-    errno = 0;
-    char *end = NULL;
-    unsigned long long v = strtoull(s, &end, 10);
-    if (errno == ERANGE) return false;
-    if (errno != 0) return false;
-    if (!end || end == s || *end != '\0') return false;
-
-    *out = (uint64_t)v;
-    return true;
-}
-
-static uint32_t imm12_signed_pack(int64_t x) {
-    if (x < -2048 || x > 2047) return 0xFFFFFFFFu;
-    return (uint32_t)(x & 0xFFF);
-}
-
-// -------------------- Register / mem parsing --------------------
-
-static const char* valid_registers[] = {
-    "r0","r1","r2","r3","r4","r5","r6","r7",
-    "r8","r9","r10","r11","r12","r13","r14","r15",
-    "r16","r17","r18","r19","r20","r21","r22","r23",
-    "r24","r25","r26","r27","r28","r29","r30","r31"
-};
-
-static bool parse_reg_num(const char *tok, uint8_t *out) {
-    if (!tok || !out) return false;
-    for (int i = 0; i < 32; i++) {
-        if (strcmp(tok, valid_registers[i]) == 0) {
-            *out = (uint8_t)i;
-            return true;
-        }
+static bool resolve_i64_value(const char *tok, int64_t *out) {
+    if (!tok || !*tok) return false;
+    if (tok[0] == ':') {
+        if (!is_valid_label_name(tok + 1)) return false;
+        uint64_t addr = get_addr(tok + 1);
+        if (addr == (uint64_t)-1) return false;
+        // absolute address may exceed int64, but our program addresses start at 0x1000 so ok
+        *out = (int64_t)addr;
+        return true;
     }
-    return false;
+    return parse_i64_literal(tok, out);
 }
 
 static bool parse_mem_operand(const char *tok, uint8_t *base, int64_t *off) {
@@ -268,8 +276,8 @@ static bool parse_mem_operand(const char *tok, uint8_t *base, int64_t *off) {
     if (*p != 'r') return false;
     p++;
 
-    char *end = NULL;
     errno = 0;
+    char *end = NULL;
     long reg = strtol(p, &end, 10);
     if (errno != 0 || end == p || *end != ')' || reg < 0 || reg > 31) return false;
     *base = (uint8_t)reg;
@@ -289,208 +297,168 @@ static bool parse_mem_operand(const char *tok, uint8_t *base, int64_t *off) {
     return true;
 }
 
-static void m_clr(FILE *out, const char *rd) {
-    fprintf(out, "\txor %s, %s, %s\n", rd, rd, rd);
-}
-static void m_in(FILE *out, const char *rd, const char *rs) {
-    fprintf(out, "\tpriv %s, %s, r0, 3\n", rd, rs);
-}
-static void m_out(FILE *out, const char *rd, const char *rs) {
-    fprintf(out, "\tpriv %s, %s, r0, 4\n", rd, rs);
-}
-static void m_push(FILE *out, const char *rd) {
-    fprintf(out, "\tmov (r31)(-8), %s\n", rd);
-    fprintf(out, "\tsubi r31, 8\n");
-}
-static void m_pop(FILE *out, const char *rd) {
-    fprintf(out, "\tmov %s, (r31)(0)\n", rd);
-    fprintf(out, "\taddi r31, 8\n");
-}
-static void m_halt(FILE *out) {
-    fprintf(out, "\tpriv r0, r0, r0, 0\n");
+static uint32_t imm12_signed(int64_t x) {
+    if (x < -2048 || x > 2047) return 0xFFFFFFFFu;
+    return (uint32_t)(x & 0xFFF);
 }
 
-// Expands a 64-bit constant using addi/shftli sequence (12 instructions total = 48 bytes)
-static void m_ld(FILE *out, const char *rd, uint64_t L) {
-    fprintf(out, "\txor %s, %s, %s\n", rd, rd, rd);
-    fprintf(out, "\taddi %s, %llu\n", rd, (unsigned long long)((L >> 52) & 0xFFFULL));
-    fprintf(out, "\tshftli %s, 12\n", rd);
-    fprintf(out, "\taddi %s, %llu\n", rd, (unsigned long long)((L >> 40) & 0xFFFULL));
-    fprintf(out, "\tshftli %s, 12\n", rd);
-    fprintf(out, "\taddi %s, %llu\n", rd, (unsigned long long)((L >> 28) & 0xFFFULL));
-    fprintf(out, "\tshftli %s, 12\n", rd);
-    fprintf(out, "\taddi %s, %llu\n", rd, (unsigned long long)((L >> 16) & 0xFFFULL));
-    fprintf(out, "\tshftli %s, 12\n", rd);
-    fprintf(out, "\taddi %s, %llu\n", rd, (unsigned long long)((L >> 4) & 0xFFFULL));
-    fprintf(out, "\tshftli %s, 4\n", rd);
-    fprintf(out, "\taddi %s, %llu\n", rd, (unsigned long long)(L & 0xFULL));
+static uint32_t imm12_unsigned(uint64_t x) {
+    if (x > 0xFFFULL) return 0xFFFFFFFFu;
+    return (uint32_t)(x & 0xFFF);
 }
 
-static const InstrDesc* lookup_instr_desc(const char *mnem) {
-    for (int i = 0; instr_table[i].name; i++) {
-        if (strcmp(mnem, instr_table[i].name) == 0) return &instr_table[i];
-    }
-    return NULL;
+static void clr(FILE *intermediate, const char *rd) {
+    fprintf(intermediate, "\txor %s, %s, %s\n", rd, rd, rd);
+}
+static void in_(FILE *intermediate, const char *rd, const char *rs) {
+    fprintf(intermediate, "\tpriv %s, %s, r0, 3\n", rd, rs);
+}
+static void out_(FILE *intermediate, const char *rd, const char *rs) {
+    fprintf(intermediate, "\tpriv %s, %s, r0, 4\n", rd, rs);
+}
+static void push(FILE *intermediate, const char *rd) {
+    fprintf(intermediate, "\tmov (r31)(-8), %s\n", rd);
+    fprintf(intermediate, "\tsubi r31, 8\n");
+}
+static void pop(FILE *intermediate, const char *rd) {
+    fprintf(intermediate, "\tmov %s, (r31)(0)\n", rd);
+    fprintf(intermediate, "\taddi r31, 8\n");
+}
+static void halt(FILE *intermediate) {
+    fprintf(intermediate, "\tpriv r0, r0, r0, 0\n");
+}
+static void ld(FILE *intermediate, const char *rd, uint64_t L) {
+    fprintf(intermediate, "\txor %s, %s, %s\n", rd, rd, rd);
+    fprintf(intermediate, "\taddi %s, %llu\n", rd, (unsigned long long)((L >> 52) & 0xFFFULL));
+    fprintf(intermediate, "\tshftli %s, 12\n", rd);
+    fprintf(intermediate, "\taddi %s, %llu\n", rd, (unsigned long long)((L >> 40) & 0xFFFULL));
+    fprintf(intermediate, "\tshftli %s, 12\n", rd);
+    fprintf(intermediate, "\taddi %s, %llu\n", rd, (unsigned long long)((L >> 28) & 0xFFFULL));
+    fprintf(intermediate, "\tshftli %s, 12\n", rd);
+    fprintf(intermediate, "\taddi %s, %llu\n", rd, (unsigned long long)((L >> 16) & 0xFFFULL));
+    fprintf(intermediate, "\tshftli %s, 12\n", rd);
+    fprintf(intermediate, "\taddi %s, %llu\n", rd, (unsigned long long)((L >> 4) & 0xFFFULL));
+    fprintf(intermediate, "\tshftli %s, 4\n", rd);
+    fprintf(intermediate, "\taddi %s, %llu\n", rd, (unsigned long long)(L & 0xFULL));
 }
 
-static int expected_operand_count_for_mnem(const char *mnem) {
-    // macros + specials
-    if (!strcmp(mnem, "clr")) return 1;
-    if (!strcmp(mnem, "in")) return 2;
-    if (!strcmp(mnem, "out")) return 2;
-    if (!strcmp(mnem, "push")) return 1;
-    if (!strcmp(mnem, "pop")) return 1;
-    if (!strcmp(mnem, "halt")) return 0;
-    if (!strcmp(mnem, "ld")) return 2;
-    if (!strcmp(mnem, "mov")) return 2;
-    if (!strcmp(mnem, "brr")) return 1;
-
-    const InstrDesc *d = lookup_instr_desc(mnem);
-    if (!d) return -1;
-
-    switch (d->fmt) {
-        case FMT_RRR:  return 3;
-        case FMT_RI:   return 2;
-        case FMT_RR:   return 2;
-        case FMT_R:    return 1;
-        case FMT_L:    return 1;
-        case FMT_RRL:  return 3;
-        case FMT_PRIV: return 4;
-        case FMT_NONE: return 0;
-        default: return -1;
-    }
-}
-
-static int instr_size_bytes(const char *mnem) {
-    if (!strcmp(mnem, "push")) return 8;
-    if (!strcmp(mnem, "pop"))  return 8;
-    if (!strcmp(mnem, "ld"))   return 48;
-    return 4;
-}
-
-static void parseInput(FILE *input) {
+void parseInput(FILE *input) {
     char raw[MAX_LINE];
+
+    int section = -1; // 0 code, 1 data
     uint64_t pc = 0x1000;
 
-    int section = -1; // 0 = code, 1 = data
-    bool seen_code = false;
-    bool seen_any_code_stmt = false;
-
     while (fgets(raw, sizeof(raw), input)) {
-        enforce_leading_space_rule(raw);
+        enforce_no_leading_spaces(raw);
 
-        char clean[MAX_LINE];
-        strcpy(clean, raw);
-        trim_line_inplace(clean);
+        char line[MAX_LINE];
+        strcpy(line, raw);
+        trim_comment_and_trailing_ws(line);
+        if (!line_has_non_ws(line)) continue;
 
-        if (!line_has_non_ws(clean)) continue;
-
-        char *ptr = clean;
+        // ptr to first non-ws in trimmed line
+        char *ptr = line;
         while (isspace((unsigned char)*ptr)) ptr++;
         if (*ptr == '\0') continue;
 
-        // Section directives must be alone (after trimming)
-        if (strncmp(ptr, ".code", 5) == 0) {
-            if (ptr[5] != '\0') dief("Unknown/extra tokens after .code", raw);
+        // section directives
+        if (strncmp(ptr, ".code", 5) == 0 && (ptr[5] == '\0' || isspace((unsigned char)ptr[5]))) {
+            // must be only ".code" (after comment removal)
+            // allow whitespace only after .code
+            char *q = ptr + 5;
+            while (*q) { if (!isspace((unsigned char)*q)) dief("Unknown section directive", raw); q++; }
             section = 0;
-            seen_code = true;
             continue;
         }
-        if (strncmp(ptr, ".data", 5) == 0) {
-            if (ptr[5] != '\0') dief("Unknown/extra tokens after .data", raw);
-            if (!seen_code) dief(".data seen before .code", raw);
+        if (strncmp(ptr, ".data", 5) == 0 && (ptr[5] == '\0' || isspace((unsigned char)ptr[5]))) {
+            char *q = ptr + 5;
+            while (*q) { if (!isspace((unsigned char)*q)) dief("Unknown section directive", raw); q++; }
             section = 1;
             continue;
         }
 
-        // Label line
+        // labels
         if (*ptr == ':') {
-            // label must start at column 0
-            if (raw[0] != ':') dief("Label must start at column 0", raw);
-            enforce_label_only(ptr, raw);
+            enforce_label_only(ptr);
 
-            char labelbuf[256];
-            if (sscanf(ptr + 1, "%255s", labelbuf) != 1) dief("Invalid label syntax", raw);
-            add_label(labelbuf, pc, raw);
+            char label_name[256];
+            // read token after ':'
+            const char *p = ptr + 1;
+            int i = 0;
+            while (*p && !isspace((unsigned char)*p) && i < (int)sizeof(label_name) - 1) {
+                label_name[i++] = *p++;
+            }
+            label_name[i] = '\0';
+
+            add_label_checked(label_name, pc);
             continue;
         }
 
-        // Statement line must begin with a tab
         enforce_tab_rule_if_statement(raw, ptr);
 
-        if (section == -1) dief("Statement outside of .code/.data", raw);
+        if (section == -1) dief("Instruction/data outside of .code/.data", raw);
 
-        if (section == 1) {
-            char *p2 = ptr;
-            char *tok1 = parse_token(&p2);
-            if (!tok1) dief("Malformed data line", raw);
+        if (section == 0) {
+            char tmp[MAX_LINE];
+            strcpy(tmp, ptr);
+            // tokenize (first token is mnemonic)
+            char *tp = tmp;
+            char *mnem = parse_token(&tp);
+            if (!mnem) dief("Malformed instruction", raw);
+
+            int num_instructions = 1;
+            if (strcmp(mnem, "push") == 0) num_instructions = 2;
+            else if (strcmp(mnem, "pop") == 0) num_instructions = 2;
+            else if (strcmp(mnem, "ld") == 0) num_instructions = 12;
+
+            pc += 4ULL * (uint64_t)num_instructions;
+            free(mnem);
+        } else {
+            // data: must be non-negative, in 64-bit range, decimal-only (or :label), no extra tokens
+            char *tp = ptr;
+            char *tok = parse_token(&tp);
+            if (!tok) dief("Malformed data line", raw);
+
             uint64_t v;
-            if (!parse_u64_decimal_strict(tok1, &v)) {
-                free(tok1);
-                dief("Invalid data literal (must be unsigned 64-bit decimal)", raw);
+            if (!parse_u64_decimal_or_label(tok, &v)) {
+                free(tok);
+                dief("Invalid data literal (must be unsigned decimal in 64-bit range, or :label)", raw);
             }
-            free(tok1);
-            char *tok2 = parse_token(&p2);
-            if (tok2) {
-                free(tok2);
+            free(tok);
+
+            char *extra = parse_token(&tp);
+            if (extra) {
+                free(extra);
                 dief("Extra token in data line", raw);
             }
-            pc += 8;
-            continue;
+            pc += 8ULL;
         }
-
-        // code statement: validate mnemonic exists + operand count at minimum
-        char *p2 = ptr;
-        char *mnem = parse_token(&p2);
-        if (!mnem) dief("Malformed instruction line", raw);
-
-        int expected = expected_operand_count_for_mnem(mnem);
-        if (expected < 0) {
-            free(mnem);
-            dief("Unknown instruction mnemonic", raw);
-        }
-
-        int count = 0;
-        char *t;
-        while ((t = parse_token(&p2)) != NULL) {
-            count++;
-            free(t);
-        }
-        if (count != expected) {
-            free(mnem);
-            dief("Wrong number of operands", raw);
-        }
-
-        seen_any_code_stmt = true;
-        pc += (uint64_t)instr_size_bytes(mnem);
-        free(mnem);
     }
-
-    if (!seen_code) dief("Missing .code section", NULL);
-    if (!seen_any_code_stmt) dief(".code section has no statements", NULL);
 }
 
-static void generateIntermediate(FILE *input, FILE *intermediate) {
-    char raw[MAX_LINE];
-    int section = -1; // 0 = code, 1 = data
-    int last_section_written = -2;
+// ===================== Pass 1b: generate intermediate (macros expanded) =====================
 
-    uint64_t pc = 0x1000; // needed for brr label resolution
+void generateIntermediate(FILE *input, FILE *intermediate) {
+    char raw[MAX_LINE];
+    int section = -1; // 0 code, 1 data
+    int last_section_written = -1;
+
+    // Track PC for brr :label to emit signed instruction-count offsets
+    uint64_t pc = 0x1000;
 
     while (fgets(raw, sizeof(raw), input)) {
-        enforce_leading_space_rule(raw);
+        enforce_no_leading_spaces(raw);
 
-        char clean[MAX_LINE];
-        strcpy(clean, raw);
-        trim_line_inplace(clean);
+        char line[MAX_LINE];
+        strcpy(line, raw);
+        trim_comment_and_trailing_ws(line);
+        if (!line_has_non_ws(line)) continue;
 
-        if (!line_has_non_ws(clean)) continue;
-
-        char *ptr = clean;
+        char *ptr = line;
         while (isspace((unsigned char)*ptr)) ptr++;
         if (*ptr == '\0') continue;
 
-        if (strncmp(ptr, ".code", 5) == 0 && ptr[5] == '\0') {
+        if (strncmp(ptr, ".code", 5) == 0) {
             section = 0;
             if (last_section_written != 0) {
                 fprintf(intermediate, ".code\n");
@@ -498,7 +466,7 @@ static void generateIntermediate(FILE *input, FILE *intermediate) {
             }
             continue;
         }
-        if (strncmp(ptr, ".data", 5) == 0 && ptr[5] == '\0') {
+        if (strncmp(ptr, ".data", 5) == 0) {
             section = 1;
             if (last_section_written != 1) {
                 fprintf(intermediate, ".data\n");
@@ -508,194 +476,140 @@ static void generateIntermediate(FILE *input, FILE *intermediate) {
         }
 
         if (*ptr == ':') {
-            if (raw[0] != ':') dief("Label must start at column 0", raw);
-            enforce_label_only(ptr, raw);
+            // label line - do not emit in intermediate
             continue;
         }
 
         enforce_tab_rule_if_statement(raw, ptr);
+
         if (section == -1) dief("Statement outside of .code/.data", raw);
 
         if (section == 1) {
-            char *p2 = ptr;
-            char *tok = parse_token(&p2);
-            if (!tok) dief("Malformed data line", raw);
-
+            // data: validate and emit normalized decimal
             uint64_t v;
-            if (!parse_u64_decimal_strict(tok, &v)) {
-                free(tok);
-                dief("Invalid data literal (must be unsigned 64-bit decimal)", raw);
-            }
-            free(tok);
-
-            char *tok2 = parse_token(&p2);
-            if (tok2) {
-                free(tok2);
-                dief("Extra token in data line", raw);
-            }
-
+            if (!parse_u64_decimal_or_label(ptr, &v)) dief("Invalid data line", raw);
             fprintf(intermediate, "\t%llu\n", (unsigned long long)v);
-            pc += 8;
+            pc += 8ULL;
             continue;
         }
 
-        // code statement
-        char *p2 = ptr;
-        char *mnem = parse_token(&p2);
-        if (!mnem) dief("Malformed instruction line", raw);
+        // code
+        char *p = ptr;
+        char *instr = parse_token(&p);
+        if (!instr) continue;
 
-        // macros with strict register validation
-        if (strcmp(mnem, "clr") == 0) {
-            char *rd = parse_token(&p2);
-            char *extra = parse_token(&p2);
-            uint8_t rr;
-            if (!rd || extra) { free(mnem); free(rd); free(extra); dief("Malformed clr", raw); }
-            if (!parse_reg_num(rd, &rr)) { free(mnem); free(rd); dief("clr requires a valid register", raw); }
-            m_clr(intermediate, rd);
-            pc += 4;
-            free(mnem); free(rd);
+        if (strcmp(instr, "clr") == 0) {
+            char *rd = parse_token(&p);
+            char *extra = parse_token(&p);
+            if (!rd || extra) dief("Malformed clr", raw);
+            clr(intermediate, rd);
+            free(rd); free(extra); free(instr);
+            pc += 4ULL;
             continue;
         }
-        if (strcmp(mnem, "in") == 0) {
-            char *rd = parse_token(&p2);
-            char *rs = parse_token(&p2);
-            char *extra = parse_token(&p2);
-            uint8_t rrd, rrs;
-            if (!rd || !rs || extra) { free(mnem); free(rd); free(rs); free(extra); dief("Malformed in", raw); }
-            if (!parse_reg_num(rd, &rrd) || !parse_reg_num(rs, &rrs)) { free(mnem); free(rd); free(rs); dief("in requires valid registers", raw); }
-            m_in(intermediate, rd, rs);
-            pc += 4;
-            free(mnem); free(rd); free(rs);
+        if (strcmp(instr, "in") == 0) {
+            char *rd = parse_token(&p);
+            char *rs = parse_token(&p);
+            char *extra = parse_token(&p);
+            if (!rd || !rs || extra) dief("Malformed in", raw);
+            in_(intermediate, rd, rs);
+            free(rd); free(rs); free(extra); free(instr);
+            pc += 4ULL;
             continue;
         }
-        if (strcmp(mnem, "out") == 0) {
-            char *rd = parse_token(&p2);
-            char *rs = parse_token(&p2);
-            char *extra = parse_token(&p2);
-            uint8_t rrd, rrs;
-            if (!rd || !rs || extra) { free(mnem); free(rd); free(rs); free(extra); dief("Malformed out", raw); }
-            if (!parse_reg_num(rd, &rrd) || !parse_reg_num(rs, &rrs)) { free(mnem); free(rd); free(rs); dief("out requires valid registers", raw); }
-            m_out(intermediate, rd, rs);
-            pc += 4;
-            free(mnem); free(rd); free(rs);
+        if (strcmp(instr, "out") == 0) {
+            char *rd = parse_token(&p);
+            char *rs = parse_token(&p);
+            char *extra = parse_token(&p);
+            if (!rd || !rs || extra) dief("Malformed out", raw);
+            out_(intermediate, rd, rs);
+            free(rd); free(rs); free(extra); free(instr);
+            pc += 4ULL;
             continue;
         }
-        if (strcmp(mnem, "push") == 0) {
-            char *rd = parse_token(&p2);
-            char *extra = parse_token(&p2);
-            uint8_t rr;
-            if (!rd || extra) { free(mnem); free(rd); free(extra); dief("Malformed push", raw); }
-            if (!parse_reg_num(rd, &rr)) { free(mnem); free(rd); dief("push requires a valid register", raw); }
-            m_push(intermediate, rd);
-            pc += 8;
-            free(mnem); free(rd);
+        if (strcmp(instr, "push") == 0) {
+            char *rd = parse_token(&p);
+            char *extra = parse_token(&p);
+            if (!rd || extra) dief("Malformed push", raw);
+            push(intermediate, rd);
+            free(rd); free(extra); free(instr);
+            pc += 8ULL;
             continue;
         }
-        if (strcmp(mnem, "pop") == 0) {
-            char *rd = parse_token(&p2);
-            char *extra = parse_token(&p2);
-            uint8_t rr;
-            if (!rd || extra) { free(mnem); free(rd); free(extra); dief("Malformed pop", raw); }
-            if (!parse_reg_num(rd, &rr)) { free(mnem); free(rd); dief("pop requires a valid register", raw); }
-            m_pop(intermediate, rd);
-            pc += 8;
-            free(mnem); free(rd);
+        if (strcmp(instr, "pop") == 0) {
+            char *rd = parse_token(&p);
+            char *extra = parse_token(&p);
+            if (!rd || extra) dief("Malformed pop", raw);
+            pop(intermediate, rd);
+            free(rd); free(extra); free(instr);
+            pc += 8ULL;
             continue;
         }
-        if (strcmp(mnem, "halt") == 0) {
-            char *extra = parse_token(&p2);
-            if (extra) { free(mnem); free(extra); dief("halt takes no operands", raw); }
-            m_halt(intermediate);
-            pc += 4;
-            free(mnem);
+        if (strcmp(instr, "halt") == 0) {
+            char *extra = parse_token(&p);
+            if (extra) dief("Malformed halt", raw);
+            halt(intermediate);
+            free(extra); free(instr);
+            pc += 4ULL;
             continue;
         }
-        if (strcmp(mnem, "ld") == 0) {
-            char *rd = parse_token(&p2);
-            char *L_str = parse_token(&p2);
-            char *extra = parse_token(&p2);
-            uint8_t rr;
-            if (!rd || !L_str || extra) { free(mnem); free(rd); free(L_str); free(extra); dief("Malformed ld", raw); }
-            if (!parse_reg_num(rd, &rr)) { free(mnem); free(rd); free(L_str); dief("ld requires a valid register", raw); }
+        if (strcmp(instr, "ld") == 0) {
+            char *rd = parse_token(&p);
+            char *Ltok = parse_token(&p);
+            char *extra = parse_token(&p);
+            if (!rd || !Ltok || extra) dief("Malformed ld", raw);
 
             uint64_t L;
-            if (L_str[0] == ':') {
-                if (!is_valid_label_name(L_str + 1)) { free(mnem); free(rd); free(L_str); dief("Invalid label reference", raw); }
-                L = get_addr(L_str + 1);
-                if (L == (uint64_t)-1) { free(mnem); free(rd); free(L_str); dief("Unknown label in ld", raw); }
+            if (Ltok[0] == ':') {
+                if (!is_valid_label_name(Ltok + 1)) dief("Invalid label in ld", raw);
+                L = get_addr(Ltok + 1);
+                if (L == (uint64_t)-1) dief("Unknown label in ld", raw);
             } else {
-                if (!parse_u64_anybase_strict(L_str, &L)) { free(mnem); free(rd); free(L_str); dief("Invalid literal in ld", raw); }
+                if (!parse_u64_literal_base0_unsigned(Ltok, &L)) dief("Invalid literal in ld", raw);
             }
-            m_ld(intermediate, rd, L);
-            pc += 48;
-            free(mnem); free(rd); free(L_str);
+
+            ld(intermediate, rd, L);
+            free(rd); free(Ltok); free(extra); free(instr);
+            pc += 48ULL;
             continue;
         }
 
-        // Special: brr resolution if operand is label => PC-relative instruction count
-        if (strcmp(mnem, "brr") == 0) {
-            char *op1 = parse_token(&p2);
-            char *extra = parse_token(&p2);
-            if (!op1 || extra) { free(mnem); free(op1); free(extra); dief("Malformed brr", raw); }
+        if (strcmp(instr, "brr") == 0) {
+            char *arg = parse_token(&p);
+            char *extra = parse_token(&p);
+            if (!arg || extra) dief("Malformed brr", raw);
 
-            uint8_t r;
-            if (parse_reg_num(op1, &r)) {
-                fprintf(intermediate, "\tbrr %s\n", op1);
-                pc += 4;
+            if (arg[0] == ':') {
+                if (!is_valid_label_name(arg + 1)) dief("Invalid label in brr", raw);
+                uint64_t target = get_addr(arg + 1);
+                if (target == (uint64_t)-1) dief("Unknown label in brr", raw);
+
+                // PC-relative offset in instructions: (target - (pc + 4)) / 4
+                int64_t diff_bytes = (int64_t)target - (int64_t)(pc + 4ULL);
+                int64_t L_inst = diff_bytes / 4LL;
+                fprintf(intermediate, "\tbrr %lld\n", (long long)L_inst);
             } else {
-                int64_t L_count = 0;
-                if (op1[0] == ':') {
-                    if (!is_valid_label_name(op1 + 1)) { free(mnem); free(op1); dief("Invalid label reference", raw); }
-                    uint64_t target = get_addr(op1 + 1);
-                    if (target == (uint64_t)-1) { free(mnem); free(op1); dief("Unknown label in brr", raw); }
-                    // PC-relative: (target - (pc + 4)) / 4
-                    L_count = (int64_t)((int64_t)target - (int64_t)(pc + 4)) / 4;
-                } else {
-                    // allow numeric instruction-count literal (signed decimal/hex)
-                    char *end = NULL;
-                    errno = 0;
-                    long long tmp = strtoll(op1, &end, 0);
-                    if (errno != 0 || !end || *end != '\0') { free(mnem); free(op1); dief("Invalid brr literal", raw); }
-                    L_count = (int64_t)tmp;
-                }
-                if (L_count < -2048 || L_count > 2047) { free(mnem); free(op1); dief("brr offset out of signed 12-bit range", raw); }
-                fprintf(intermediate, "\tbrr %lld\n", (long long)L_count);
-                pc += 4;
+                fprintf(intermediate, "\tbrr %s\n", arg);
             }
 
-            free(mnem); free(op1);
+            free(arg); free(extra); free(instr);
+            pc += 4ULL;
             continue;
         }
 
-        int expected = expected_operand_count_for_mnem(mnem);
-        if (expected < 0) { free(mnem); dief("Unknown instruction mnemonic", raw); }
+        fprintf(intermediate, "\t%s", instr);
+        free(instr);
 
-        fprintf(intermediate, "\t%s", mnem);
-
-        char *tok = parse_token(&p2);
+        char *tok = parse_token(&p);
         int first = 1;
         while (tok) {
-            if (tok[0] == ':') {
-                if (!is_valid_label_name(tok + 1)) { free(tok); free(mnem); dief("Invalid label reference", raw); }
-                uint64_t addr = get_addr(tok + 1);
-                if (addr == (uint64_t)-1) { free(tok); free(mnem); dief("Unknown label referenced", raw); }
-
-                free(tok);
-                char buf[64];
-                snprintf(buf, sizeof(buf), "%llu", (unsigned long long)addr);
-                tok = my_strdup(buf);
-                if (!tok) { free(mnem); dief("Out of memory", raw); }
-            }
-
             fprintf(intermediate, "%s%s", (first ? " " : ", "), tok);
             first = 0;
             free(tok);
-            tok = parse_token(&p2);
+            tok = parse_token(&p);
         }
         fprintf(intermediate, "\n");
-
-        pc += 4;
-        free(mnem);
+        pc += 4ULL;
     }
 }
 
@@ -719,104 +633,102 @@ static void write_instr(FILE *out, Opcode opcode,
     write_u32(out, inst);
 }
 
-static bool generateOutput(FILE *intermediate, FILE *output) {
+static const char *valid_registers[] = {
+    "r0","r1","r2","r3","r4","r5","r6","r7",
+    "r8","r9","r10","r11","r12","r13","r14","r15",
+    "r16","r17","r18","r19","r20","r21","r22","r23",
+    "r24","r25","r26","r27","r28","r29","r30","r31"
+};
+
+static bool parse_reg_num(const char *tok, uint8_t *out) {
+    for (int i = 0; i < 32; i++) {
+        if (strcmp(tok, valid_registers[i]) == 0) {
+            *out = (uint8_t)i;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void clearFile(const char *path) {
+    FILE *f = fopen(path, "w");
+    if (f) fclose(f);
+}
+
+bool generateOutput(FILE *intermediate, FILE *output) {
     char raw[MAX_LINE];
     int section = -1; // 0 code, 1 data
 
     while (fgets(raw, sizeof(raw), intermediate)) {
-        char clean[MAX_LINE];
-        strcpy(clean, raw);
-        trim_line_inplace(clean);
+        // intermediate must already be clean, but still strip comments/trailing ws
+        char line[MAX_LINE];
+        strcpy(line, raw);
+        trim_comment_and_trailing_ws(line);
+        if (!line_has_non_ws(line)) continue;
 
-        if (!line_has_non_ws(clean)) continue;
-
-        char *ptr = clean;
+        char *ptr = line;
         while (isspace((unsigned char)*ptr)) ptr++;
         if (*ptr == '\0') continue;
 
-        if (strncmp(ptr, ".code", 5) == 0 && ptr[5] == '\0') { section = 0; continue; }
-        if (strncmp(ptr, ".data", 5) == 0 && ptr[5] == '\0') { section = 1; continue; }
+        if (strncmp(ptr, ".code", 5) == 0) { section = 0; continue; }
+        if (strncmp(ptr, ".data", 5) == 0) { section = 1; continue; }
 
-        if (raw[0] != '\t') dief("Intermediate statement missing leading tab", raw);
-        if (section == -1) dief("Intermediate content outside section", raw);
-
-        // advance past tab
-        if (*ptr == '\t') ptr++;
+        // Statements must begin with tab in intermediate
+        if (raw[0] != '\t') dief("Intermediate invalid: statement missing leading tab", raw);
+        if (section == -1) dief("Content outside section", raw);
 
         if (section == 1) {
-            // data: strict unsigned decimal
-            char *p2 = ptr;
-            char *tok = parse_token(&p2);
-            if (!tok) dief("Bad data line in intermediate", raw);
+            // .data: strict decimal/label, non-negative, in 64-bit range
             uint64_t v;
-            if (!parse_u64_decimal_strict(tok, &v)) { free(tok); dief("Bad data literal in intermediate", raw); }
-            free(tok);
-
-            char *extra = parse_token(&p2);
-            if (extra) { free(extra); dief("Extra token in data intermediate", raw); }
-
+            if (!parse_u64_decimal_or_label(ptr, &v)) dief("Bad data literal in intermediate", raw);
             write_u64(output, v);
             continue;
         }
 
-        // code line
-        char *p2 = ptr;
-        char *op = parse_token(&p2);
+        // code
+        char *p = ptr;
+        char *op = parse_token(&p);
         if (!op) continue;
 
-        // mov is multi-form
+        // mov special handling (same as your original, but keep checks)
         if (strcmp(op, "mov") == 0) {
-            char *t1 = parse_token(&p2);
-            char *t2 = parse_token(&p2);
-            char *t3 = parse_token(&p2);
+            char *t1 = parse_token(&p);
+            char *t2 = parse_token(&p);
+            char *t3 = parse_token(&p);
             if (!t1 || !t2 || t3) {
                 free(op); free(t1); free(t2); free(t3);
-                dief("Invalid mov in intermediate", raw);
+                dief("Invalid mov instruction", raw);
             }
 
             uint8_t rd, rs;
-            uint64_t imm;
+            uint64_t uimm;
 
             // mov rd, rs
             if (parse_reg_num(t1, &rd) && parse_reg_num(t2, &rs)) {
                 write_instr(output, OP_MOV_RR, rd, rs, 0, 0);
             }
-            // mov rd, L  (unsigned u12)
-            else if (parse_reg_num(t1, &rd) && parse_u64_anybase_strict(t2, &imm)) {
-                if (imm > MAX_IMMEDIATE_U12) {
-                    free(op); free(t1); free(t2);
-                    dief("Immediate too large for mov rd, L (u12)", raw);
-                }
-                write_instr(output, OP_MOV_RL, rd, 0, 0, (uint32_t)imm);
+            // mov rd, L (unsigned imm12)
+            else if (parse_reg_num(t1, &rd) && parse_u64_literal_base0_unsigned(t2, &uimm)) {
+                uint32_t imm12 = imm12_unsigned(uimm);
+                if (imm12 == 0xFFFFFFFFu) dief("Immediate too large for mov rd, L", raw);
+                write_instr(output, OP_MOV_RL, rd, 0, 0, imm12);
             }
-            // mov rd, (rs)(L)
+            // mov rd, (rs)(L)   (load)
             else if (parse_reg_num(t1, &rd) && t2[0] == '(') {
                 uint8_t base;
                 int64_t off;
-                if (!parse_mem_operand(t2, &base, &off)) {
-                    free(op); free(t1); free(t2);
-                    dief("Invalid mem operand for mov rd,(rs)(L)", raw);
-                }
-                uint32_t imm12 = imm12_signed_pack(off);
-                if (imm12 == 0xFFFFFFFFu) {
-                    free(op); free(t1); free(t2);
-                    dief("mov offset out of signed 12-bit range", raw);
-                }
+                if (!parse_mem_operand(t2, &base, &off)) dief("Invalid memory operand for mov rd,(rs)(L)", raw);
+                uint32_t imm12 = imm12_signed(off);
+                if (imm12 == 0xFFFFFFFFu) dief("mov offset out of signed 12-bit range", raw);
                 write_instr(output, OP_MOV_MR, rd, base, 0, imm12);
             }
-            // mov (rd)(L), rs
+            // mov (rd)(L), rs   (store)
             else if (t1[0] == '(' && parse_reg_num(t2, &rs)) {
                 uint8_t base;
                 int64_t off;
-                if (!parse_mem_operand(t1, &base, &off)) {
-                    free(op); free(t1); free(t2);
-                    dief("Invalid mem operand for mov (rd)(L),rs", raw);
-                }
-                uint32_t imm12 = imm12_signed_pack(off);
-                if (imm12 == 0xFFFFFFFFu) {
-                    free(op); free(t1); free(t2);
-                    dief("mov offset out of signed 12-bit range", raw);
-                }
+                if (!parse_mem_operand(t1, &base, &off)) dief("Invalid memory operand for mov (rd)(L),rs", raw);
+                uint32_t imm12 = imm12_signed(off);
+                if (imm12 == 0xFFFFFFFFu) dief("mov offset out of signed 12-bit range", raw);
                 write_instr(output, OP_MOV_RM, base, rs, 0, imm12);
             }
             else {
@@ -828,26 +740,29 @@ static bool generateOutput(FILE *intermediate, FILE *output) {
             continue;
         }
 
-        // brr: register or signed u12 field (already resolved to literal in intermediate)
+        // brr special handling:
+        // - brr rd -> OP_BRR
+        // - brr L  -> OP_BRR_L with signed imm12 (PC-relative count already computed in intermediate if label)
         if (strcmp(op, "brr") == 0) {
-            char *t1 = parse_token(&p2);
-            char *extra = parse_token(&p2);
-            if (!t1 || extra) {
-                free(op); free(t1); free(extra);
-                dief("Invalid brr in intermediate", raw);
+            char *t1 = parse_token(&p);
+            char *t2 = parse_token(&p);
+            if (!t1 || t2) {
+                free(op); free(t1); free(t2);
+                dief("Invalid arguments for brr", raw);
             }
 
             uint8_t rd;
             if (parse_reg_num(t1, &rd)) {
                 write_instr(output, OP_BRR, rd, 0, 0, 0);
             } else {
-                // signed literal
-                char *end = NULL;
-                errno = 0;
-                long long v = strtoll(t1, &end, 0);
-                if (errno != 0 || !end || *end != '\0') { free(op); free(t1); dief("Bad brr literal", raw); }
-                uint32_t imm12 = imm12_signed_pack((int64_t)v);
-                if (imm12 == 0xFFFFFFFFu) { free(op); free(t1); dief("brr literal out of signed 12-bit range", raw); }
+                int64_t L;
+                // intermediate should have numeric for labels already; but accept numeric token
+                if (!parse_i64_literal(t1, &L)) {
+                    free(op); free(t1);
+                    dief("Invalid brr literal (must be signed int)", raw);
+                }
+                uint32_t imm12 = imm12_signed(L);
+                if (imm12 == 0xFFFFFFFFu) dief("brr offset out of signed 12-bit range", raw);
                 write_instr(output, OP_BRR_L, 0, 0, 0, imm12);
             }
 
@@ -855,30 +770,46 @@ static bool generateOutput(FILE *intermediate, FILE *output) {
             continue;
         }
 
-        // Lookup normal instruction
-        const InstrDesc *desc = lookup_instr_desc(op);
-        if (!desc) { free(op); dief("Unknown instruction in intermediate", raw); }
+        // Look up opcode/format
+        const InstrDesc *desc = NULL;
+        for (int i = 0; instr_table[i].name; i++) {
+            if (strcmp(op, instr_table[i].name) == 0) { desc = &instr_table[i]; break; }
+        }
+        if (!desc) {
+            free(op);
+            dief("Unknown instruction in intermediate", raw);
+        }
 
-        char *t1 = parse_token(&p2);
-        char *t2 = parse_token(&p2);
-        char *t3 = parse_token(&p2);
-        char *t4 = parse_token(&p2);
-        char *t5 = parse_token(&p2);
+        char *t1 = parse_token(&p);
+        char *t2 = parse_token(&p);
+        char *t3 = parse_token(&p);
+        char *t4 = parse_token(&p);
+        char *t5 = parse_token(&p);
 
         if (desc->fmt == FMT_RRR) {
             uint8_t rd, rs, rt;
             if (!t1 || !t2 || !t3 || t4) dief("Bad RRR format", raw);
-            if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs) || !parse_reg_num(t3, &rt)) dief("Bad RRR operands", raw);
+            if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs) || !parse_reg_num(t3, &rt))
+                dief("Bad RRR operands", raw);
             write_instr(output, desc->opcode, rd, rs, rt, 0);
         }
         else if (desc->fmt == FMT_RI) {
             uint8_t rd;
-            uint64_t imm;
+            uint64_t uimm;
             if (!t1 || !t2 || t3) dief("Bad RI format", raw);
-            if (!parse_reg_num(t1, &rd)) dief("Bad RI reg", raw);
-            if (!parse_u64_anybase_strict(t2, &imm)) dief("Bad RI literal", raw);
-            if (imm > MAX_IMMEDIATE_U12) dief("RI literal out of u12 range", raw);
-            write_instr(output, desc->opcode, rd, 0, 0, (uint32_t)imm);
+            if (!parse_reg_num(t1, &rd)) dief("Bad RI register", raw);
+            if (t2[0] == ':') {
+                if (!is_valid_label_name(t2 + 1)) dief("Invalid label", raw);
+                uint64_t addr = get_addr(t2 + 1);
+                if (addr == (uint64_t)-1) dief("Unknown label", raw);
+                uimm = addr;
+            } else {
+                if (!parse_u64_literal_base0_unsigned(t2, &uimm)) dief("Bad RI immediate", raw);
+            }
+
+            uint32_t imm12 = imm12_unsigned(uimm);
+            if (imm12 == 0xFFFFFFFFu) dief("RI immediate out of 12-bit unsigned range", raw);
+            write_instr(output, desc->opcode, rd, 0, 0, imm12);
         }
         else if (desc->fmt == FMT_RR) {
             uint8_t rd, rs;
@@ -893,36 +824,69 @@ static bool generateOutput(FILE *intermediate, FILE *output) {
             write_instr(output, desc->opcode, rd, 0, 0, 0);
         }
         else if (desc->fmt == FMT_L) {
-            uint64_t imm;
+            // unsigned imm12
+            uint64_t uimm;
             if (!t1 || t2) dief("Bad L format", raw);
-            if (!parse_u64_anybase_strict(t1, &imm)) dief("Bad L literal", raw);
-            if (imm > MAX_IMMEDIATE_U12) dief("L literal out of u12 range", raw);
-            write_instr(output, desc->opcode, 0, 0, 0, (uint32_t)imm);
+
+            if (t1[0] == ':') {
+                if (!is_valid_label_name(t1 + 1)) dief("Invalid label", raw);
+                uint64_t addr = get_addr(t1 + 1);
+                if (addr == (uint64_t)-1) dief("Unknown label", raw);
+                uimm = addr;
+            } else {
+                if (!parse_u64_literal_base0_unsigned(t1, &uimm)) dief("Bad L operand", raw);
+            }
+
+            uint32_t imm12 = imm12_unsigned(uimm);
+            if (imm12 == 0xFFFFFFFFu) dief("L immediate out of 12-bit unsigned range", raw);
+            write_instr(output, desc->opcode, 0, 0, 0, imm12);
         }
         else if (desc->fmt == FMT_RRL) {
+            // rd, rs, unsigned imm12 (or label)
             uint8_t rd, rs;
-            uint64_t imm;
+            uint64_t uimm;
             if (!t1 || !t2 || !t3 || t4) dief("Bad RRL format", raw);
             if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs)) dief("Bad RRL regs", raw);
-            if (!parse_u64_anybase_strict(t3, &imm)) dief("Bad RRL literal", raw);
-            if (imm > MAX_IMMEDIATE_U12) dief("RRL literal out of u12 range", raw);
-            write_instr(output, desc->opcode, rd, rs, 0, (uint32_t)imm);
+
+            if (t3[0] == ':') {
+                if (!is_valid_label_name(t3 + 1)) dief("Invalid label", raw);
+                uint64_t addr = get_addr(t3 + 1);
+                if (addr == (uint64_t)-1) dief("Unknown label", raw);
+                uimm = addr;
+            } else {
+                if (!parse_u64_literal_base0_unsigned(t3, &uimm)) dief("Bad RRL immediate", raw);
+            }
+
+            uint32_t imm12 = imm12_unsigned(uimm);
+            if (imm12 == 0xFFFFFFFFu) dief("RRL immediate out of 12-bit unsigned range", raw);
+            write_instr(output, desc->opcode, rd, rs, 0, imm12);
         }
         else if (desc->fmt == FMT_PRIV) {
             uint8_t rd, rs, rt;
-            uint64_t imm;
+            uint64_t uimm;
             if (!t1 || !t2 || !t3 || !t4 || t5) dief("Bad PRIV format", raw);
-            if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs) || !parse_reg_num(t3, &rt)) dief("Bad PRIV regs", raw);
-            if (!parse_u64_anybase_strict(t4, &imm)) dief("Bad PRIV literal", raw);
-            if (imm > MAX_IMMEDIATE_U12) dief("PRIV literal out of u12 range", raw);
-            write_instr(output, desc->opcode, rd, rs, rt, (uint32_t)imm);
+            if (!parse_reg_num(t1, &rd) || !parse_reg_num(t2, &rs) || !parse_reg_num(t3, &rt))
+                dief("Bad PRIV regs", raw);
+
+            if (t4[0] == ':') {
+                if (!is_valid_label_name(t4 + 1)) dief("Invalid label", raw);
+                uint64_t addr = get_addr(t4 + 1);
+                if (addr == (uint64_t)-1) dief("Unknown label", raw);
+                uimm = addr;
+            } else {
+                if (!parse_u64_literal_base0_unsigned(t4, &uimm)) dief("Bad PRIV immediate", raw);
+            }
+
+            uint32_t imm12 = imm12_unsigned(uimm);
+            if (imm12 == 0xFFFFFFFFu) dief("PRIV immediate out of 12-bit unsigned range", raw);
+            write_instr(output, desc->opcode, rd, rs, rt, imm12);
         }
         else if (desc->fmt == FMT_NONE) {
             if (t1) dief("Unexpected operand for no-operand instruction", raw);
             write_instr(output, desc->opcode, 0, 0, 0, 0);
         }
         else {
-            dief("Unhandled instruction format", raw);
+            dief("Unhandled format in Stage 2", raw);
         }
 
         free(op);
@@ -932,14 +896,9 @@ static bool generateOutput(FILE *intermediate, FILE *output) {
     return true;
 }
 
-static void clearFile(const char* path) {
-    FILE *f = fopen(path, "w");
-    if (f) fclose(f);
-}
-
 int main(int argc, char *argv[]) {
     if (argc != 4) {
-        fprintf(stderr, "Usage: %s <input.tk> <intermediate.tk> <output.tko>\n", argv[0]);
+        fprintf(stderr, "Incorrect number of arguments\n");
         return 1;
     }
 
@@ -955,28 +914,32 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    // pass 1: labels + size checking
     parseInput(input);
+
+    // pass 1b: write intermediate
     rewind(input);
     generateIntermediate(input, intermediate);
 
     fclose(input);
     fclose(intermediate);
 
+    // pass 2: generate binary
     FILE *intermediate2 = fopen(argv[2], "r");
     if (!intermediate2) {
-        fprintf(stderr, "Could not reopen intermediate\n");
+        fprintf(stderr, "Could not open intermediate for reading\n");
         fclose(output);
         return 1;
     }
 
-    bool ok = generateOutput(intermediate2, output);
-    fclose(intermediate2);
-    fclose(output);
-
-    if (!ok) {
+    if (!generateOutput(intermediate2, output)) {
+        fclose(intermediate2);
+        fclose(output);
         clearFile(argv[2]);
         return 1;
     }
 
+    fclose(intermediate2);
+    fclose(output);
     return 0;
 }

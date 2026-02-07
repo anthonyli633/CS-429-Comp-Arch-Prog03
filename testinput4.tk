@@ -1,0 +1,12 @@
+; invalid cases
+
+.code
+.data
+	18446744073709551616
+	123456000000000000000
+	1234 1234
+	abcdef
+.code
+	hello world
+	add r0,r00, r0
+	push pop

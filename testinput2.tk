@@ -1,0 +1,35 @@
+.code
+	add r1,r1,r1
+	push r1
+	mov (r20)(-237),r31
+	pop r0
+	mov r20,(r31)(-237)
+	call r0
+	brnz r0,r1
+	mov (r1)(-2048),r0
+	mov (r1)(2047),r0
+	mov r0,(r1)(-2048)
+	mov r0,(r1)(2047)
+	halt
+	clr r0
+	add      r0,         r21,    r1
+	push r0
+	addi r0,4095
+:A0
+	in r0,r1
+:A1
+.code
+	out r1,r0
+:B0
+	ld r0,      :L0
+:B1
+.data
+:D0
+	322834289
+.code
+:L0
+:L1
+:L2
+.code
+	brr 128
+	ld r0,      :D0
